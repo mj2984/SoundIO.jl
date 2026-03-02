@@ -1,0 +1,20 @@
+function Base.show(io::IO, ctx::SoundIOContext)
+    state = ctx.ptr[] == C_NULL ? "🔴 Closed" : "🟢 Active"
+    print(io, "SoundIOContext ($state, $(length(ctx.devices)) devices)")
+end
+#=
+function Base.show(io::IO, ctx::SoundIOContext)
+    state = ctx.ptr[] == C_NULL ? "🔴 Closed" : "🟢 Active"
+    print(io, "SoundIOContext ($state, $(length(ctx.devices)) devices, $(length(ctx.streams)) streams)")
+end
+=#
+function Base.show(io::IO, dev::SoundIODevice)
+    icon = dev.is_input ? "🎤" : "🎧"
+    default = dev.is_default ? " ⭐" : ""
+    print(io, "$icon $(dev.name)$default")
+end
+#=
+function Base.show(io::IO, s::SoundIOOutStream)
+    print(io, "🔊 Stream ($(s.rate)Hz, Format $(s.format)) on $(s.device.name)")
+end
+=#
