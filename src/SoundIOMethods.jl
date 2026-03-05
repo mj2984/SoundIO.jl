@@ -9,7 +9,7 @@ function frozen_audio_callback(os_ptr::Ptr{SoundIoOutStream_C}, f_min::Cint, f_m
 
     # 1. Ask Hardware for buffer space
     st._frames_ref[] = f_max
-    ccall((:soundio_outstream_begin_write, libsoundio), Cint, 
+    ccall(soundio_outstream_begin_write_ptr, Cint, 
           (Ptr{Cvoid}, Ptr{Ptr{SoundIoChannelArea_C}}, Ptr{Cint}), 
           os_ptr, st._areas_ref, st._frames_ref)
 
