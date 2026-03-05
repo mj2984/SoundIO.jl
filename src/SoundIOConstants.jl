@@ -1,13 +1,24 @@
 # Little Endian (3 bytes), Big Endian
-@enum SoundIoFormat begin
-    FormatInvalid = 0
-    S8 = 1; U8 = 2
-    S16LE = 3; S16BE = 4
-    U16LE = 5; U16BE = 6
-    S24LE = 7; S24BE = 8
-    U24LE = 9; U24BE = 10
-    S32LE = 11; S32BE = 12
-    U32LE = 13; U32BE = 14
-    Float32LE = 15; Float32BE = 16
-    Float64LE = 17; Float64BE = 18
-end
+# Pre-resolving the memory address of the function to bypass lookup in the shared library's symbol table.
+const soundio_wait_events_ptr = Libdl.dlsym(Libdl.dlopen(libsoundio), :soundio_wait_events)
+const SoundIoFormats = Dict{Symbol, Int32}(
+    :Invalid        => 0,
+    :Int8           => 1,
+    :UInt8          => 2,
+    :Int16Little    => 3,
+    :Int16Big       => 4,
+    :UInt16Little   => 5,
+    :UInt16Big      => 6,
+    :Int24Little    => 7,
+    :Int24Big       => 8,
+    :UInt24Little   => 9,
+    :UInt24Big      => 10,
+    :Int32Little    => 11,
+    :Int32Big       => 12,
+    :UInt32Little   => 13,
+    :UInt32Big      => 14,
+    :Float32Little  => 15,
+    :Float32Big     => 16,
+    :Float64Little  => 17,
+    :Float64Big     => 18,
+)
