@@ -1,6 +1,7 @@
 # Little Endian (3 bytes), Big Endian
 # Pre-resolving the memory address of the function to bypass lookup in the shared library's symbol table.
 const soundio_wait_events_ptr = Libdl.dlsym(Libdl.dlopen(libsoundio), :soundio_wait_events)
+const soundio_outstream_begin_write_ptr = Libdl.dlsym(Libdl.dlopen(libsoundio), :soundio_outstream_begin_write)
 const SoundIoFormats = Dict{Symbol, Int32}(
     :Invalid        => 0,
     :Int8           => 1,
