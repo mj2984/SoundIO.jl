@@ -1,51 +1,47 @@
 # --- The Direct C Callback ---
-function direct_callback(os_ptr::Ptr{SoundIoOutStream_C}, f_min::Cint, f_max::Cint)
+function frozen_audio_callback(os_ptr::Ptr{SoundIoOutStream_C}, f_min::Cint, f_max::Cint)
+    # Recover our Julia "Frozen" object
     os = unsafe_load(os_ptr)
-    # Recover our Julia object from the userdata pointer address
-    state = unsafe_pointer_to_objref(os.userdata)::PlaybackState
+    buffer = unsafe_pointer_to_objref(os.userdata)::FrozenAudioBuffer
     
-    areas_ref = Ref{Ptr{SoundIoChannelArea_C}}()
-    frames_to_fill = Ref{Cint}(f_max)
-    ccall((:soundio_outstream_begin_write, libsoundio), Cint, 
-          (Ptr{Cvoid}, Ptr{Ptr{SoundIoChannelArea_C}}, Ptr{Cint}), os_ptr, areas_ref, frames_to_fill)
+    lay = buffer.layout
+    st  = buffer.stream
 
-    actual_frames = frames_to_fill[]
-    dest_ptr = convert(Ptr{Int32}, unsafe_load(areas_ref[]).ptr)
-    
-    # Logic for Playback and Pause
-    frames_remaining = state.total_frames - state.current_frame
-    to_copy = min(actual_frames, frames_remaining)
-    
-    if state.is_playing && to_copy > 0
-        src_ptr = state.data_ptr + (state.current_frame * state.channels * sizeof(Int32))
+    # 1. Ask Hardware for buffer space
+    st._frames_ref[] = f_max
+    ccall((:soundio_outstream_begin_write, libsoundio), Cint, 
+          (Ptr{Cvoid}, Ptr{Ptr{SoundIoChannelArea_C}}, Ptr{Cint}), 
+          os_ptr, st._areas_ref, st._frames_ref)
+
+    actual_frames = st._frames_ref[]
+    dest_ptr = convert(Ptr{Int32}, unsafe_load(st._areas_ref[]).ptr)
+
+    # 2. Logic: How much "Frozen" data to copy?
+    remaining = lay.total_frames - st.current_frame
+    to_copy = min(actual_frames, remaining)
+
+    if st.is_playing && to_copy > 0
+        src_offset = st.current_frame * lay.channels * sizeof(Int32)
+        unsafe_copyto!(dest_ptr, lay.data_ptr + src_offset, to_copy * lay.channels)
+        st.current_frame += to_copy
+    end
+
+    # 3. Handle End-of-Buffer and Silence
+    if to_copy < actual_frames
+        silence_offset = to_copy * lay.channels * sizeof(Int32)
+        ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), 
+              dest_ptr + silence_offset, 0, (actual_frames - to_copy) * lay.channels * sizeof(Int32))
         
-        # Apply Volume and Copy
-        if state.volume >= 0.99 # Optimization for full volume
-            unsafe_copyto!(dest_ptr, src_ptr, to_copy * state.channels)
-        else
-            # Simple software volume mixing
-            for j in 0:(to_copy * state.channels - 1)
-                sample = unsafe_load(src_ptr, j + 1)
-                unsafe_store!(dest_ptr, round(Int32, sample * state.volume), j + 1)
-            end
+        if st.current_frame >= lay.total_frames
+            st.is_finished = true
         end
-        state.current_frame += to_copy
-        
-        # Fill remainder with silence if song ends
-        if to_copy < actual_frames
-            ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), 
-                  dest_ptr + (to_copy * state.channels * 4), 0, (actual_frames - to_copy) * state.channels * 4)
-        end
-    else
-        # Paused or End of Song: Silence
-        ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), dest_ptr, 0, actual_frames * state.channels * 4)
     end
 
     ccall((:soundio_outstream_end_write, libsoundio), Cint, (Ptr{Cvoid},), os_ptr)
     return nothing
 end
 
-const DIRECT_CALLBACK = @cfunction(direct_callback, Cvoid, (Ptr{SoundIoOutStream_C}, Cint, Cint))
+const FROZEN_CALLBACK = @cfunction(frozen_audio_callback, Cvoid, (Ptr{SoundIoOutStream_C}, Cint, Cint))
 
 function Base.close(ctx::SoundIOContext)
     if ctx.ptr[] != C_NULL
@@ -117,7 +113,8 @@ function enumerate_devices!(ctx::SoundIOContext)
 end
 list_devices(ctx::SoundIOContext) = ctx.devices
 
-function open_outstream_direct(ctx::SoundIOContext, device::SoundIODevice, format::SoundIoFormat, rate::Integer, state::PlaybackState)
+#=
+function open_outstream_direct(device::SoundIODevice, format::SoundIoFormat, rate::Integer, state::PlaybackState)
     out_ptr = ccall((:soundio_outstream_create, libsoundio), Ptr{SoundIoOutStream_C}, (Ptr{Cvoid},), device.ptr)
     s = unsafe_load(out_ptr)
     s.format, s.sample_rate, s.write_callback, s.userdata = Cint(format), Cint(rate), DIRECT_CALLBACK, pointer_from_objref(state)
@@ -126,6 +123,70 @@ function open_outstream_direct(ctx::SoundIOContext, device::SoundIODevice, forma
     ccall((:soundio_outstream_start, libsoundio), Cint, (Ptr{Cvoid},), out_ptr)
     return SoundIOOutStream(out_ptr, device, format, Cint(rate))
 end
+=#
+#=
+function open_outstream_direct(device::SoundIODevice, buffer::FrozenAudioBuffer, rate::Integer, format::Integer)
+    # Create the C-side stream object
+    out_ptr = ccall((:soundio_outstream_create, libsoundio), Ptr{SoundIoOutStream_C}, (Ptr{Cvoid},), device.ptr)
+    out_ptr == C_NULL && error("Failed to create outstream")
+
+    # 1. Map Julia "Frozen" settings to C
+    s = unsafe_load(out_ptr)
+    s.format = Cint(format)#Cint(SoundIO.S32LE) # Matches your wavread logic
+    s.sample_rate = Cint(rate)
+    s.write_callback = FROZEN_CALLBACK
+    s.userdata = pointer_from_objref(buffer) # The "Hand-off"
+    
+    # 2. Add Error/Underflow hooks (Optional but recommended)
+    # s.underflow_callback = @cfunction(...) 
+    
+    unsafe_store!(out_ptr, s)
+
+    # 3. Open and Start (with Error Checking)
+    check_soundio_err(ccall((:soundio_outstream_open, libsoundio), Cint, (Ptr{Cvoid},), out_ptr))
+    check_soundio_err(ccall((:soundio_outstream_start, libsoundio), Cint, (Ptr{Cvoid},), out_ptr))
+
+    return out_ptr
+end
+=#
+# Method 1: The "Engine" (Handles the C-calls using raw Integers)
+function open_outstream_direct(device::SoundIODevice, buffer::FrozenAudioBuffer, rate::Integer, format::Integer)
+    # Create the C-side stream object
+    out_ptr = ccall((:soundio_outstream_create, libsoundio), Ptr{SoundIoOutStream_C}, (Ptr{Cvoid},), device.ptr)
+    out_ptr == C_NULL && error("Failed to create outstream")
+
+    # 1. Map Julia "Frozen" settings to C
+    s = unsafe_load(out_ptr)
+    s.format = Cint(format) 
+    s.sample_rate = Cint(rate)
+    s.write_callback = FROZEN_CALLBACK
+    s.userdata = pointer_from_objref(buffer) # The "Hand-off" to Julia object
+    
+    # Update the C-struct in memory
+    unsafe_store!(out_ptr, s)
+
+    ccall((:soundio_outstream_open, libsoundio), Cint, (Ptr{Cvoid},), out_ptr)
+    ccall((:soundio_outstream_start, libsoundio), Cint, (Ptr{Cvoid},), out_ptr)
+
+    # 2. Open and Start (with Error Checking)
+    #check_soundio_err(ccall((:soundio_outstream_open, libsoundio), Cint, (Ptr{Cvoid},), out_ptr))
+    #check_soundio_err(ccall((:soundio_outstream_start, libsoundio), Cint, (Ptr{Cvoid},), out_ptr))
+
+    #return out_ptr
+    return SoundIOOutStream(out_ptr, device, format, Cint(rate))
+end
+
+# Method 2: The "Facade" (Converts Symbols to Integers)
+function open_outstream_direct(device::SoundIODevice, buffer::FrozenAudioBuffer, rate::Integer, format::Symbol)
+    # Perform the dictionary lookup
+    if !haskey(SoundIoFormats, format)
+        error("Unknown SoundIO format: :$format. Available: $(keys(SoundIoFormats))")
+    end
+    
+    # Call the Integer-based method
+    return open_outstream_direct(device, buffer, rate, SoundIoFormats[format])
+end
+wait_events(ctx::SoundIOContext) = ccall(soundio_wait_events_ptr, Cvoid, (Ptr{Cvoid},), ctx.ptr[])
 function wait_events(ctx::SoundIOContext, wait_time::Real = 1.0)
     ctx.ptr[] == C_NULL && return
     start_time = time()
@@ -133,4 +194,46 @@ function wait_events(ctx::SoundIOContext, wait_time::Real = 1.0)
         ccall((:soundio_wait_events, libsoundio), Cvoid, (Ptr{Cvoid},), ctx.ptr[])
         sleep(0.01) # Yield to Julia's task scheduler
     end
+end
+#=
+@inline function play_audio(audio_data,sample_rate,ctx,audio_device)
+    channels, frames = size(audio_data)
+    state = PlaybackState(pointer(audio_data), frames, 0, channels, true)
+    GC.@preserve audio_data state ctx audio_device begin
+        stream = open_outstream_direct(audio_device, SoundIO.S32LE, Int(sample_rate), state)
+        while state.current_frame < state.total_frames
+            wait_events(ctx)
+            sleep(0.1) # Main loop is idle, audio runs in background thread
+        end
+    end
+end
+=#
+function play_audio(audio_data::Matrix{Int32}, sample_rate::Integer, ctx::SoundIOContext, device::SoundIODevice, format::fmtType) where fmtType <: Union{Symbol,Int32}
+    channels, frames = size(audio_data)
+    
+    # Create our modular "Frozen" structure
+    buffer = FrozenAudioBuffer(pointer(audio_data), frames, channels)
+    
+    # Preserve audio data and the buffer object from GC during the C thread's run
+    GC.@preserve audio_data buffer begin
+        stream = open_outstream_direct(device, buffer, sample_rate, format)
+        #push!(ctx.streams, stream_ptr) # Track for RAII cleanup
+        
+        #println("🔊 Playback started. Press Ctrl+C to stop.")
+        
+        try
+            # Main Control Loop
+            while !buffer.stream.is_finished
+                # wait_events is efficient; it sleeps the thread until an event occurs
+                wait_events(ctx)
+                # Small sleep to yield to Julia scheduler for REPL interactivity
+                yield()
+            end
+        finally
+            # Stop stream playback when done or interrupted
+            ccall((:soundio_outstream_destroy, libsoundio), Cvoid, (Ptr{Cvoid},), stream.ptr)
+            #filter!(s -> s != stream_ptr, ctx.streams)
+        end
+    end
+    #println("✅ Playback finished.")
 end
