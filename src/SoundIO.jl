@@ -9,5 +9,5 @@ include("SoundIOPrettyPrintMethods.jl")
 include("SoundIOMethods.jl")
 
 export SoundIOContext, SoundIODevice, SoundIOOutStream, PlaybackState,
-       enumerate_devices!, open_outstream_direct, wait_events
+       enumerate_devices!, open_outstream_direct, wait_events, play_audio
 end
