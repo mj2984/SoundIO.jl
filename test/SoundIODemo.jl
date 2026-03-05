@@ -1,25 +1,39 @@
 include(raw"../src/SoundIO.jl")
 using .SoundIO
-function play_with_controls(path)
+@inline function process_audio(sound_file)
     # 1. Load native Int32 (24-bit audio in 32-bit container)
-    y_native, fs = wavread(path, format="native", raw_layout = true)
     # wavread updated to produce native format (interleaved audio)
-    channels, frames = size(y_native)
-    # 3. Shift to 32-bit
-    packed_data = y_native .<< 8
-    # 3. Create the Bridge with Controls
-    state = PlaybackState(pointer(packed_data), frames, 0, channels, true, 1.0f0)
-    # 4. Playback with Safety Preservation
-    GC.@preserve packed_data state begin
+    y,fs, nbits, opt = wavread(path, format="native", raw_layout = true)
+    processed_audio = y .<< 8
+    processed_sample_rate = fs
+    return processed_audio, processed_sample_rate
+end
+function play_music(sound_file)
+    audio_data,sample_rate = process_audio(sound_file)
+    SoundIOContext() do ctx
+        enumerate_devices!(ctx)
+        audio_device = filter(d -> !d.is_input, ctx.devices)[2]
+        println("🎶 Playing: $sound_file")
+        println("Keys: [p]ause/resume, [s]eek forward 10s, [v]olume down, [q]uit")
+        play_audio(audio_data,Int(sample_rate),ctx,audio_device,:Int32Little)
+        println("Finished!")
+    end
+end
+function play_with_controls(path)
+    @inline processed_audio,processed_sample_rate = process_audio(path)
+    channels, frames = size(processed_audio)
+    #state = PlaybackState(pointer(processed_audio), frames, 0, channels, true)
+    buffer = FrozenAudioBuffer(pointer(processed_audio), frames, channels)
+    GC.@preserve processed_audio buffer begin
         SoundIOContext() do ctx
             enumerate_devices!(ctx)
-            target = first(filter(d -> !d.is_input && d.is_default, ctx.devices))
-            stream = open_outstream_direct(ctx, target, SoundIO.S32LE, Int(fs), state)
+            device = filter(d -> !d.is_input, ctx.devices)[2]
+            stream = open_outstream_direct(device, buffer, Int(processed_sample_rate), :Int32Little)
             
-            println("🎶 Playing: $path")
-            println("Keys: [p]ause/resume, [s]eek forward 10s, [v]olume down, [q]uit")
+            #println("🎶 Playing: $path")
+            #println("Keys: [p]ause/resume, [s]eek forward 10s, [v]olume down, [q]uit")
             
-            while state.current_frame < state.total_frames
+            while !buffer.stream.is_finished
                 wait_events(ctx)
                 sleep(0.1) # Main loop is idle, audio runs in background thread
                 
@@ -28,7 +42,7 @@ function play_with_controls(path)
                 # state.is_playing = false       # Pause
                 # state.current_frame += 960000  # Seek forward 10 seconds
             end
-            println("Finished!")
+            #println("Finished!")
         end
     end
 end
