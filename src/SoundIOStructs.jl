@@ -58,7 +58,7 @@ end
 struct SoundIOOutStream
     ptr::Ptr{SoundIoOutStream_C}
     device::SoundIODevice
-    format::SoundIoFormat
+    format::Cint
     rate::Cint
 end
 #=
@@ -84,12 +84,36 @@ struct SoundIOContext
         return new(Ref(ptr), SoundIODevice[], SoundIOOutStream[])
     end
 end
-# --- The Playback Control Bridge ---
-mutable struct PlaybackState
+struct PlaybackTargets
     data_ptr::Ptr{Int32}
     total_frames::Int64
-    current_frame::Int64
+end
+
+# The "Map": Immutable description of the static memory
+struct FrozenAudioLayout
+    data_ptr::Ptr{Int32}
+    total_frames::Int64
     channels::Int32
-    is_playing::Bool     # New: Pause Control
-    volume::Float32      # New: Volume Control (0.0 to 1.0)
+end
+
+# The "Engine": Mutable state for the active playback
+mutable struct FrozenAudioStream
+    current_frame::Int64
+    is_playing::Bool
+    is_finished::Bool
+    # Pre-allocated to avoid GC churn in the high-speed callback
+    _areas_ref::Ref{Ptr{SoundIoChannelArea_C}}
+    _frames_ref::Ref{Cint}
+end
+
+# The "Container": The single object we track in Julia
+mutable struct FrozenAudioBuffer
+    layout::FrozenAudioLayout
+    stream::FrozenAudioStream
+    
+    function FrozenAudioBuffer(ptr::Ptr{Int32}, frames::Integer, channels::Integer)
+        lay = FrozenAudioLayout(ptr, Int64(frames), Int32(channels))
+        st  = FrozenAudioStream(0, true, false, Ref{Ptr{SoundIoChannelArea_C}}(), Ref{Cint}(0))
+        return new(lay, st)
+    end
 end
