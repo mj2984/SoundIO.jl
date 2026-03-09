@@ -75,6 +75,10 @@ For a complete example of how to load and play back a high-quality WAV file usin
 *   **GC Preservation**: Critical buffers are wrapped in GC.@preserve blocks during playback to ensure the C-thread always has a valid memory address.
 *   **Error Handling**: Instead of raw integers, errors are returned as clean Julia symbols (e.g., :BackendDisconnected, :BufferUnderflow, :OutOfMemory).
 
+Universal Data Transport
+
+Beyond traditional audio, SoundIO.jl can serve as a high-performance transport layer for any synchronous data. By leveraging Exclusive Mode, the library provides a bit-perfect pipe that bypasses OS-level mixers—making it suitable for high-precision telemetry, biomedical signals (ECG/EEG), or industrial sensor data when used with class-compliant hardware.
+
 License
 
 SoundIO.jl: MIT License (c) 2026 mj2984
