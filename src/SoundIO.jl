@@ -1,13 +1,10 @@
 module SoundIO
-using Libdl
-using libsoundio_jll
-const libsoundio = libsoundio_jll.libsoundio_path
-
+using Libdl, libsoundio_jll
 include("SoundIOConstants.jl")
 include("SoundIOStructs.jl")
 include("SoundIOPrettyPrintMethods.jl")
 include("SoundIOMethods.jl")
 
 export SoundIOContext, SoundIODevice, SoundIOOutStream, PlaybackState,
-       enumerate_devices!, open_outstream_direct, wait_events, play_audio, FrozenAudioBuffer
+       enumerate_devices!, play_audio, FrozenAudioBuffer
 end
