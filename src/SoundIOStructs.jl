@@ -71,7 +71,7 @@ struct SoundIODevice
     end
 end
 struct SoundIOContext
-    ptr::Ref{Ptr{Cvoid}}
+    ptr::Base.RefValue{Ptr{Cvoid}}
     devices::Vector{SoundIODevice}
     function SoundIOContext()
         p = ccall((:soundio_create, libsoundio), Ptr{Cvoid}, ())
@@ -94,8 +94,8 @@ mutable struct FrozenAudioStream # The "Engine": Mutable state for the active pl
     current_frame::Int64
     is_playing::Bool
     is_finished::Bool
-    _areas_ref::Ref{Ptr{SoundIoChannelArea_C}} # Pre-allocated to avoid GC churn in the high-speed callback
-    _frames_ref::Ref{Cint}
+    _areas_ref::Base.RefValue{Ptr{SoundIoChannelArea_C}} # Pre-allocated to avoid GC churn in the high-speed callback
+    _frames_ref::Base.RefValue{Cint}
 end
 abstract type SoundIOSynchronizer end
 mutable struct FrozenAudioBuffer <: SoundIOSynchronizer # The "Container": The single object we track in Julia
@@ -108,9 +108,9 @@ mutable struct FrozenAudioBuffer <: SoundIOSynchronizer # The "Container": The s
     end
 end
 mutable struct AudioCallbackSynchronizer <: SoundIOSynchronizer # A thread-safe "Mailbox" to communicate between C-callback and Julia Task
-    @atomic status::Int32         # 0=Idle, 1=C-Ready, 2=Julia-Done
+    @atomic status::Int         # 0=Idle, 1=C-Ready, 2=Julia-Done
     @atomic is_active::Bool
-    _areas_ref::Ref{Ptr{SoundIoChannelArea_C}}
-    _frames_ref::Ref{Cint}
+    _areas_ref::Base.RefValue{Ptr{SoundIoChannelArea_C}}
+    _frames_ref::Base.RefValue{Cint}
     AudioCallbackSynchronizer() = new(0, true, Ref{Ptr{SoundIoChannelArea_C}}(), Ref{Cint}(0))
 end
