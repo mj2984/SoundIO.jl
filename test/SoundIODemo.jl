@@ -1,5 +1,6 @@
 include(raw"../src/SoundIO.jl")
 using .SoundIO
+using WAV
 # A simple audio streamer that plays from RAM (audio_data).
 # Example of pure julia pipeline to interface with SoundIO buffers.
 function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer, audio_data::Matrix{Int32})
@@ -54,7 +55,7 @@ function play_audio_threaded(audio_data::Matrix{Int32}, sample_rate::Integer, ct
             wait_unsafe(ctx) 
             #yield()
         end
-        ccall((:soundio_outstream_destroy, libsoundio), Cvoid, (Ptr{Cvoid},), out_ptr)
+        ccall((:soundio_outstream_destroy, libsoundio), Cvoid, (Ptr{Cvoid},), stream.ptr)
     end
     wait(worker_task)
     println("Playback finished.")
@@ -77,7 +78,7 @@ function play_music(path)
     audio_data,sample_rate = process_audio(sound_file,destination_format)
     SoundIOContext() do ctx
         enumerate_devices!(ctx)
-        audio_device = filter(d -> !d.is_input, ctx.devices)[2]
+        audio_device = filter(d -> (!d.is_input) & (d.is_raw), ctx.devices)[1]
         println("🎶 Playing: $path")
         println("Keys: [p]ause/resume, [s]eek forward 10s, [v]olume down, [q]uit")
         play_audio(audio_data,Int(sample_rate),ctx,audio_device,destination_format)
@@ -85,6 +86,22 @@ function play_music(path)
         println("Finished!")
     end
 end
+#1. The Watcher (Runs in the background)
+#=
+event_task = @async begin
+    while isopen(ctx)
+        wait_unsafe!(ctx) # Blocks here at 0% CPU until a hardware event occurs
+        put!(event_channel, :hardware_changed) # Notify the rest of the app
+    end
+end#
+# 2. The Playback Loop (Runs in the foreground)
+while !buffer.stream.is_finished
+    # We don't 'wait' here because we don't want to stop the music 
+    # just to listen for a USB plug-in.
+    flush_events!(ctx) # Quickly check for errors/unplugs
+    sleep(0.01)        # Keep REPL alive for Ctrl+C
+end
+=#
 #=
 function play_with_controls(path,target_fs)
     @inline processed_audio,processed_sample_rate = process_audio(path,target_fs)
