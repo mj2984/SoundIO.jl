@@ -1,3 +1,6 @@
+# SoundIO.jl - Julia bindings for libsoundio
+# Copyright (c) 2026 mj2984. Licensed under the MIT License.
+# libsoundio is Copyright (c) 2015 Andrew Kelley.
 module SoundIO
 using Libdl, libsoundio_jll
 include("SoundIOConstants.jl")
