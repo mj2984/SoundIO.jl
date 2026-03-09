@@ -59,7 +59,10 @@ SoundIOContext(🟢 Connected, 4 Devices, 1 Active Streams)
       └─ Active Streams: 1
     2. 🎤 [  ] USB Microphone
 ```
-
+📂 Demos & Testing
+For a complete example of how to load and play back a high-quality WAV file using the threaded worker pattern, please refer to:
+/test/SoundIODemo.jl: Core logic for streaming from RAM and 24-bit alignment.
+/test/SoundIOTest.jl: Entry point for running the demo on your local machine
 🛡 Safety & Implementation
 Reference Counting: SoundIODevice automatically manages C-side reference counts to prevent use-after-free errors.
 GC Preservation: Critical buffers are wrapped in GC.@preserve blocks during playback to ensure the C-thread always has a valid memory address.
