@@ -1,97 +1,69 @@
 # --- The Audio Callback (Native Thread) ---
-#=
-function frozen_audio_callback(output_stream_ptr::Ptr{SoundIoOutStream_C}, frames_min::Cint, frames_max::Cint)
-    # --- 1. Object Recovery (Zero Allocation) ---
-    # We jump directly to the 'userdata' pointer inside the C-struct.
-    # This avoids loading the entire 100+ byte struct into Julia.
+@inline function get_audio_buffer(output_stream_ptr::Ptr{SoundIoOutStream_C})
+    # Optimized: Jump directly to userdata to bypass the expensive unsafe_load(output_stream_ptr)
     userdata_ptr_ptr = convert(Ptr{Ptr{Cvoid}}, output_stream_ptr + SOUNDIO_OUTSTREAM_USERDATA_OFFSET)
     raw_buffer_ptr   = unsafe_load(userdata_ptr_ptr)
-    # Assert type so the compiler generates specialized, fast machine code.
-    audio_buffer = unsafe_pointer_to_objref(raw_buffer_ptr)::FrozenAudioBuffer
-    layout = audio_buffer.layout
-    stream = audio_buffer.stream
-    # --- 2. Hardware Buffer Negotiation ---
-    # Tell libsoundio we want to write up to frames_max.
+    # Essential: Type assertion for zero-allocation field access
+    return unsafe_pointer_to_objref(raw_buffer_ptr)::FrozenAudioBuffer
+end
+function frozen_audio_callback(output_stream_ptr::Ptr{SoundIoOutStream_C}, frames_min::Cint, frames_max::Cint)
+    # 1. Recover the Julia Object (Optimized)
+    buffer = get_audio_buffer(output_stream_ptr)
+    #=
+    output_stream = unsafe_load(output_stream_ptr)
+    buffer = unsafe_pointer_to_objref(output_stream.userdata)::FrozenAudioBuffer
+    =#
+    layout, stream = buffer.layout, buffer.stream
+    # 2. Negotiate Buffer Space. Frames ref in both an input and output to soundio_outstream_begin_write_ptr.
+    # frames_max, frames_min is input from sound driver in the OS. User chooses a frame size based on this and the function checks and returns available memory (updates in place).
     stream._frames_ref[] = frames_max
-    # This call populates stream._areas_ref with the hardware memory address.
-    ccall(soundio_outstream_begin_write_ptr, Cint, 
-          (Ptr{Cvoid}, Ptr{Ptr{SoundIoChannelArea_C}}, Ptr{Cint}), 
-          output_stream_ptr, stream._areas_ref, stream._frames_ref)
-    actual_frames_granted = stream._frames_ref[]
-    # Get the starting pointer of the hardware's memory buffer.
-    hardware_dest_ptr = unsafe_load(stream._areas_ref[]).ptr
-    # --- 3. Memory Transfer (Data Copy) ---
-    frames_remaining_in_src = layout.total_frames - stream.current_frame
-    frames_to_copy = min(actual_frames_granted, frames_remaining_in_src)
+    ccall(soundio_outstream_begin_write_ptr, Cint, (Ptr{Cvoid}, Ptr{Ptr{SoundIoChannelArea_C}}, Ptr{Cint}), output_stream_ptr, stream._areas_ref, stream._frames_ref)
+    actual_frames = stream._frames_ref[]
+    # Get the hardware destination pointer
+    # Note: unsafe_load(stream._areas_ref[]) returns a SoundIoChannelArea_C
+    hardware_ptr = unsafe_load(stream._areas_ref[]).ptr
+    # destination_ptr = convert(Ptr{Int32}, unsafe_load(stream._areas_ref[]).ptr)
+    # 3. Calculate Copy Logic (Your verified logic)
+    remaining_src_frames = layout.total_frames - stream.current_frame
+    frames_to_copy = min(actual_frames, remaining_src_frames)
     if stream.is_playing && frames_to_copy > 0
+        # Calculate offset in BYTES to match your verified math
+        # We use Ptr{UInt8} to ensure + moves by exactly 1 byte per unit
         bytes_per_sample = sizeof(Int32)
-        total_channels   = layout.channels
-        # Calculate exactly where we are in our source data.
-        source_offset_bytes = stream.current_frame * total_channels * bytes_per_sample
-        total_bytes_to_copy = frames_to_copy * total_channels * bytes_per_sample
-        # Optimized copy (lowers to LLVM memcpy).
-        unsafe_copyto!(hardware_dest_ptr, layout.data_ptr + source_offset_bytes, total_bytes_to_copy)
+        source_offset_bytes = stream.current_frame * layout.channels * bytes_per_sample
+        total_bytes_to_copy = frames_to_copy * layout.channels * bytes_per_sample
+        # Perform the copy using raw byte pointers for maximum safety and speed
+        unsafe_copyto!(hardware_ptr, convert(Ptr{UInt8}, layout.data_ptr) + source_offset_bytes, total_bytes_to_copy)
+        #=
+        src_offset = stream.current_frame * layout.channels * sizeof(Int32)
+        unsafe_copyto!(destination_ptr, layout.data_ptr + src_offset, to_copy * layout.channels)
+        =#
         stream.current_frame += frames_to_copy
     end
-    # --- 4. Silence Padding & End-of-Buffer Check ---
-    # If the hardware gave us more space than we have data for, we must fill it with silence.
-    if frames_to_copy < actual_frames_granted
-        silence_frames = actual_frames_granted - frames_to_copy
+    # 4. Handle Silence / End-of-Buffer
+    if frames_to_copy < actual_frames
+        # Match your verified silence logic
+        silence_frames = actual_frames - frames_to_copy
         silence_offset_bytes = frames_to_copy * layout.channels * sizeof(Int32)
-        # Zero-out the remainder to prevent "buffer buzzing" or noise.
-        silence_ptr  = convert(Ptr{Int32}, hardware_dest_ptr + silence_offset_bytes)
-        silence_size = silence_frames * layout.channels
-        # Zero-allocation view and fill.
-        fill!(unsafe_wrap(Array, silence_ptr, silence_size), zero(Int32))
+        # Zero-allocation silence fill
+        silence_dest = convert(Ptr{Int32}, hardware_ptr + silence_offset_bytes)
+        silence_view = unsafe_wrap(Array, silence_dest, silence_frames * layout.channels)
+        #=
+        silence_offset = to_copy * layout.channels
+        silence_view = unsafe_wrap(Array, destination_ptr + (silence_offset * sizeof(Int32)), (actual_frames - to_copy) * layout.channels)
+        =#
+        #=
+        ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), dest_ptr + silence_offset_bytes, 0, (actual_frames - to_copy) * layout.channels * sizeof(Int32))
+        =#
+        fill!(silence_view, zero(Int32))
         if stream.current_frame >= layout.total_frames
             stream.is_finished = true
         end
     end
-    # --- 5. Commit to Hardware ---
+    # 5. Commit to Hardware
     ccall(soundio_outstream_end_write_ptr, Cint, (Ptr{Cvoid},), output_stream_ptr)
     return nothing
 end
-=#
-function frozen_audio_callback(output_stream_ptr::Ptr{SoundIoOutStream_C}, f_min::Cint, f_max::Cint)
-    output_stream = unsafe_load(output_stream_ptr)
-    buffer = unsafe_pointer_to_objref(output_stream.userdata)::FrozenAudioBuffer
-    layout, stream = buffer.layout, buffer.stream
-    # _frames_ref is both an input and output.
-    # f_max is provided by sound driver which is then passed onto soundio_outstream_begin_write_ptr.
-    # It checks and updates this with a number equal to or less than f_max based on available memory.
-    stream._frames_ref[] = f_max
-    ccall(soundio_outstream_begin_write_ptr, Cint, (Ptr{Cvoid}, Ptr{Ptr{SoundIoChannelArea_C}}, Ptr{Cint}), output_stream_ptr, stream._areas_ref, stream._frames_ref)
-    actual_frames = stream._frames_ref[]
-    destination_ptr = convert(Ptr{Int32}, unsafe_load(stream._areas_ref[]).ptr)
-    remaining = layout.total_frames - stream.current_frame
-    to_copy = min(actual_frames, remaining)
-    if stream.is_playing && to_copy > 0
-        src_offset = stream.current_frame * layout.channels * sizeof(Int32)
-        unsafe_copyto!(destination_ptr, layout.data_ptr + src_offset, to_copy * layout.channels)
-        stream.current_frame += to_copy
-    end
-    # Handle padding/End-of-Buffer with silence
-    if to_copy < actual_frames
-        silence_offset = to_copy * layout.channels
-        silence_view = unsafe_wrap(Array, destination_ptr + (silence_offset * sizeof(Int32)), (actual_frames - to_copy) * layout.channels)
-        fill!(silence_view, zero(Int32))
-        
-        if stream.current_frame >= layout.total_frames
-            stream.is_finished = true
-        end
-    end
-    #=
-        silence_offset = to_copy * layout.channels * sizeof(Int32)
-        ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), 
-              dest_ptr + silence_offset, 0, (actual_frames - to_copy) * layout.channels * sizeof(Int32))
-        
-        if stream.current_frame >= layout.total_frames
-            stream.is_finished = true
-        end
-    =#
-    ccall(soundio_outstream_end_write_ptr, Cint, (Ptr{Cvoid},), output_stream_ptr)
-    return nothing
-end#
 const FROZEN_CALLBACK = @cfunction(frozen_audio_callback, Cvoid, (Ptr{SoundIoOutStream_C}, Cint, Cint))
 # Lifecycle & Check
 Base.isopen(ctx::SoundIOContext) = ctx.ptr[] != C_NULL
