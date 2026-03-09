@@ -46,11 +46,11 @@ struct SoundIODevice
     id::String
     is_input::Bool
     is_default::Bool
+    is_raw::Bool
     streams::Vector{SoundIOOutStream}
-    function SoundIODevice(ptr::Ptr{Cvoid}, name::String, id::String, is_input::Bool, is_default::Bool)
-        # Increment Ref Count: Tell C we are holding this memory
-        ccall((:soundio_device_ref, libsoundio), Cvoid, (Ptr{Cvoid},), ptr)
-        dev = new(ptr, name, id, is_input, is_default, SoundIOOutStream[])
+    function SoundIODevice(ptr::Ptr{Cvoid}, name::String, id::String, is_input::Bool, is_default::Bool, is_raw::Bool)
+        ccall((:soundio_device_ref, libsoundio), Cvoid, (Ptr{Cvoid},), ptr) # Increment C-ref count to keep memory alive while this Julia object exists
+        return new(ptr, name, id, is_input, is_default, is_raw, SoundIOOutStream[])
         # Decrement Ref Count on GC
         #=finalizer(dev) do d
             for s in d.streams
@@ -60,6 +60,14 @@ struct SoundIODevice
         end
         return dev
         =#
+    end
+    function SoundIODevice(ptr::Ptr{Cvoid}, is_default::Bool) 
+        c_dev = unsafe_load(convert(Ptr{SoundIoDevice_C}, ptr))
+        name_str = unsafe_string(c_dev.name) #Fetch Strings from the C-struct
+        id_str   = unsafe_string(c_dev.id)
+        is_input = unsafe_load(convert(Ptr{Cint}, ptr + 8)) == 1 # 'aim' (1=Input, 2=Output) #Extract Boolean Flags
+        is_raw   = unsafe_load(convert(Ptr{UInt8}, ptr + 24)) != 0 # val = true if raw\
+        return SoundIODevice(ptr, name_str, id_str, is_input, is_default, is_raw)
     end
 end
 struct SoundIOContext
@@ -82,16 +90,14 @@ struct FrozenAudioLayout # The "Map": Immutable description of the static memory
     total_frames::Int64
     channels::Int32
 end
-# The "Engine": Mutable state for the active playback
-mutable struct FrozenAudioStream
+mutable struct FrozenAudioStream # The "Engine": Mutable state for the active playback
     current_frame::Int64
     is_playing::Bool
     is_finished::Bool
     _areas_ref::Ref{Ptr{SoundIoChannelArea_C}} # Pre-allocated to avoid GC churn in the high-speed callback
     _frames_ref::Ref{Cint}
 end
-# The "Container": The single object we track in Julia
-mutable struct FrozenAudioBuffer
+mutable struct FrozenAudioBuffer # The "Container": The single object we track in Julia
     layout::FrozenAudioLayout
     stream::FrozenAudioStream
     function FrozenAudioBuffer(ptr::Ptr{Int32}, frames::Integer, channels::Integer)
@@ -100,9 +106,3 @@ mutable struct FrozenAudioBuffer
         return new(layout, stream)
     end
 end
-#=
-struct PlaybackTargets
-    data_ptr::Ptr{Int32}
-    total_frames::Int64
-end
-=#
