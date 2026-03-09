@@ -4,8 +4,10 @@ const libsoundio = libsoundio_jll.libsoundio_path
 const soundio_wait_events_ptr = Libdl.dlsym(Libdl.dlopen(libsoundio), :soundio_wait_events)
 const soundio_outstream_begin_write_ptr = Libdl.dlsym(Libdl.dlopen(libsoundio), :soundio_outstream_begin_write)
 const soundio_outstream_end_write_ptr = Libdl.dlsym(Libdl.dlopen(libsoundio), :soundio_outstream_end_write)
-const SoundIOBackendMemoryOffsetBytes = 0
+const SoundIOBackendMemoryOffsetBytes = 32
 const SoundIOBackendNone = 0
+const SOUNDIO_DEVICE_FORMATS_OFFSET = 112
+const SOUNDIO_DEVICE_FORMAT_COUNT_OFFSET = 120
 # Little Endian (3 bytes), Big Endian
 const SoundIoFormats = Dict{Symbol, Int32}(
     :Invalid        => 0 ,
