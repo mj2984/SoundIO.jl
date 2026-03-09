@@ -60,6 +60,7 @@ SoundIOContext(🟢 Connected, 4 Devices, 1 Active Streams)
     2. 🎤 [  ] USB Microphone
 ```
 📂 Demos & Testing
+
 For a complete example of how to load and play back a high-quality WAV file using the threaded worker pattern, please refer to:
 /test/SoundIODemo.jl: Core logic for streaming from RAM and 24-bit alignment.
 /test/SoundIOTest.jl: Entry point for running the demo on your local machine
