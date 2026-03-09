@@ -47,8 +47,12 @@ schedule(worker_task)
 # The C callback will now signal Thread 5 whenever the hardware buffer is ready.
 ```
 
-🔍 REPL Interactivity
-SoundIO.jl provides rich show methods so you can inspect your audio stack at a glance:
+🔍 Self-Documenting Interactivity
+
+A core goal of SoundIO.jl is to support the development of code that is self-documenting in nature. By mapping low-level C constants to idiomatic Julia Symbols, your source code remains readable and intent-driven:
+Readable Formats: Use symbols like :Int16Little, :Int32Little, or :Float32Big instead of magic numbers.
+Expressive Errors: Hardware issues are surfaced as descriptive symbols such as :BackendDisconnected or :OpeningDeviceFailed.
+Rich REPL Inspection: Custom show methods provide immediate visual feedback on the state of your audio stack.
 ```
 julia> ctx = SoundIOContext(); connect!(ctx); enumerate_devices!(ctx);
 julia> ctx
