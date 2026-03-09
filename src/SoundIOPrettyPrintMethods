@@ -1,20 +1,48 @@
+# 1. SoundIOContext Pretty Print
 function Base.show(io::IO, ctx::SoundIOContext)
-    state = ctx.ptr[] == C_NULL ? "🔴 Closed" : "🟢 Active"
-    print(io, "SoundIOContext ($state, $(length(ctx.devices)) devices)")
+    # Your updated ternary logic
+    status = !isopen(ctx) ? "🔴 Closed" : 
+             !is_connected(ctx) ? "🟡 Allocated (Disconnected)" : 
+             "🟢 Connected"
+    
+    total_streams = sum(length(d.streams) for d in ctx.devices; init=0)
+    
+    # Header line
+    println(io, "SoundIOContext($status, $(length(ctx.devices)) Devices, $total_streams Active Streams)")
+    
+    # Pretty print the list if devices exist
+    if !isempty(ctx.devices)
+        for (i, dev) in enumerate(ctx.devices)
+            # Use 4-space indent for the list
+            # The 'show(io, dev)' call will use the SoundIODevice pretty print we wrote
+            print(io, "    $i. ")
+            show(io, dev)
+            # Add a newline for all but the last item
+            i < length(ctx.devices) && println(io)
+        end
+    end
 end
-#=
-function Base.show(io::IO, ctx::SoundIOContext)
-    state = ctx.ptr[] == C_NULL ? "🔴 Closed" : "🟢 Active"
-    print(io, "SoundIOContext ($state, $(length(ctx.devices)) devices, $(length(ctx.streams)) streams)")
-end
-=#
+
+# 2. SoundIODevice Pretty Print
 function Base.show(io::IO, dev::SoundIODevice)
     icon = dev.is_input ? "🎤" : "🎧"
-    default = dev.is_default ? " ⭐" : ""
-    print(io, "$icon $(dev.name)$default")
+    mode = dev.is_raw ? " [RAW]" : ""
+    print(io, "$icon $(dev.name)$mode$(dev.is_default ? " ⭐" : "")")
+    # Optional: Only show formats if NOT compact
+    if !get(io, :compact, false)
+        fmts = supported_formats(dev)
+        print(io, "\n      Formats: $(join(fmts, ", "))")
+    end
 end
-#=
+# 3. SoundIOOutStream Pretty Print
 function Base.show(io::IO, s::SoundIOOutStream)
-    print(io, "🔊 Stream ($(s.rate)Hz, Format $(s.format)) on $(s.device.name)")
+    # Map the Int32 format back to a Symbol for the user if possible
+    fmt_sym = :Unknown
+    for (k, v) in SoundIoFormats
+        if v == s.format
+            fmt_sym = k
+            break
+        end
+    end
+    print(io, "🔊 OutStream($(s.rate)Hz, :$fmt_sym) [Ptr: $(s.ptr)]")
 end
-=#
