@@ -58,7 +58,7 @@ A core goal of SoundIO.jl is to support the development of code that is self-doc
 julia> ctx = SoundIOContext(); connect!(ctx); enumerate_devices!(ctx);
 julia> ctx
 SoundIOContext(🟢 Connected, 4 Devices, 1 Active Streams)
-    1. 🎧 [🔗] Realtek Audio ⭐
+    1. 🎧 [🔗] USB Headphone ⭐
       └─ Formats: Int16Little, Int24Little, Int32Little, Float32Little
       └─ Active Streams: 1
     2. 🎤 [  ] USB Microphone
