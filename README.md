@@ -72,5 +72,6 @@ GC Preservation: Critical buffers are wrapped in GC.@preserve blocks during play
 Error Handling: Instead of raw integers, errors are returned as clean Julia symbols (e.g., :BackendDisconnected, :BufferUnderflow, :OutOfMemory).
 
 License
+
 SoundIO.jl: MIT License (c) 2026 mj2984
 libsoundio: MIT License (c) 2015 Andrew Kelley
