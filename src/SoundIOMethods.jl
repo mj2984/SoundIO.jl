@@ -127,8 +127,11 @@ flush_events!(ctx::SoundIOContext) = isopen(ctx) && flush_events_unsafe!(ctx)
 # Blocking Wait
 # Note: soundio_wait_events blocks the thread until an event occurs.
 @inline SoundIO_wait_unsafe(ctx_ptr) = ccall(soundio_wait_events_ptr, Cvoid, (Ptr{Cvoid},), ctx_ptr)
+@inline wait_unsafe(device::SoundIODevice) = SoundIO_wait_unsafe(device.ptrs[].ctx)
 @inline wait_unsafe(ctx::SoundIOContext) = SoundIO_wait_unsafe(ctx.ptr[])
 @inline Base.wait(ctx::SoundIOContext)= isopen(ctx) && wait_unsafe(ctx)
+@inline Base.wait(device::SoundIODevice) = SoundIO_isopen_context(device.ptrs[].ctx) && wait_unsafe(device)
+# @inline Base.wait(device::SoundIODevice) = (device.ptrs[].device != C_NULL && SoundIO_isopen_context(device.ptrs[].ctx)) && wait_unsafe(device)
 function SoundIOContext(f::Function)
     ctx = SoundIOContext()
     try
@@ -138,16 +141,24 @@ function SoundIOContext(f::Function)
         close(ctx) 
     end
 end
+function enumerate_devices_unsafe_internal!(ctx::SoundIOContext, ptrs::DeviceEnumeratorPtrs)
+    device_count = ccall(ptrs.count, Cint, (Ptr{Cvoid},), ctx.ptr[])
+    default_device_offset = ccall(ptrs.default_offset, Cint, (Ptr{Cvoid},), ctx.ptr[])
+    for offset in 0:(device_count - 1)
+        device_ptr = ccall(ptrs.get_device_ptr, Ptr{Cvoid}, (Ptr{Cvoid}, Cint), ctx.ptr[], offset)
+        # if dev_ptr != C_NULL
+        # try
+        push!(ctx.devices, SoundIODevice(ctx.ptr[], device_ptr, offset == default_device_offset))
+        # finally
+        ccall(soundio_device_unref_ptr, Cvoid, (Ptr{Cvoid},), device_ptr)
+        # end
+    end
+end
 function enumerate_devices_unsafe!(ctx::SoundIOContext)
     flush_events!(ctx)
     empty!(ctx.devices)
-    count = ccall((:soundio_output_device_count, libsoundio), Cint, (Ptr{Cvoid},), ctx.ptr[])
-    def_idx = ccall((:soundio_default_output_device_index, libsoundio), Cint, (Ptr{Cvoid},), ctx.ptr[])
-    for i in 0:(count-1)
-        dev_ptr = ccall((:soundio_get_output_device, libsoundio), Ptr{Cvoid}, (Ptr{Cvoid}, Cint), ctx.ptr[], i)
-        push!(ctx.devices, SoundIODevice(dev_ptr, i == def_idx))
-        ccall((:soundio_device_unref, libsoundio), Cvoid, (Ptr{Cvoid},), dev_ptr) # Drop the temporary reference from get_output_device
-    end
+    enumerate_devices_unsafe_internal!(ctx, DEVICE_ENUMERATOR_OUTPUT_PTRS)
+    enumerate_devices_unsafe_internal!(ctx, DEVICE_ENUMERATOR_INPUT_PTRS)
 end
 function enumerate_devices!(ctx::SoundIOContext)
     if(is_connected(ctx)) # Ensure we have a valid connection
@@ -156,7 +167,7 @@ function enumerate_devices!(ctx::SoundIOContext)
 end
 list_devices(ctx::SoundIOContext) = ctx.devices
 function initialize_sound_stream(device::SoundIODevice)
-    out_ptr = ccall((:soundio_outstream_create, libsoundio), Ptr{SoundIoOutStream_C}, (Ptr{Cvoid},), device.ptr)
+    out_ptr = ccall((:soundio_outstream_create, libsoundio), Ptr{SoundIoOutStream_C}, (Ptr{Cvoid},), device.ptrs[].device)
     out_ptr == C_NULL && error("Failed to create outstream")
     return out_ptr
 end
@@ -203,11 +214,12 @@ start!(stream::SoundIOOutStream) = ccall((:soundio_outstream_start, libsoundio),
 #check_soundio_err(ccall((:soundio_outstream_start, libsoundio), Cint, (Ptr{Cvoid},), out_ptr))
 function supported_formats(device::SoundIODevice)
     formats = Symbol[]
-    device.ptr == C_NULL && return formats
-    count_ptr = convert(Ptr{Cint}, device.ptr + SOUNDIO_DEVICE_FORMAT_COUNT_OFFSET)
+    device_ptr = device.ptrs[].device
+    device_ptr == C_NULL && return formats
+    count_ptr = convert(Ptr{Cint}, device_ptr + SOUNDIO_DEVICE_FORMAT_COUNT_OFFSET)
     count = unsafe_load(count_ptr)
     # 2. Read the pointer to the formats array (enum SoundIoFormat*)
-    formats_ptr_ptr = convert(Ptr{Ptr{Cint}}, device.ptr + SOUNDIO_DEVICE_FORMATS_OFFSET)
+    formats_ptr_ptr = convert(Ptr{Ptr{Cint}}, device_ptr + SOUNDIO_DEVICE_FORMATS_OFFSET)
     formats_array_ptr = unsafe_load(formats_ptr_ptr)
     if formats_array_ptr != C_NULL
         for i in 0:(count-1)
@@ -254,56 +266,3 @@ end
     hw_matrix = unsafe_wrap(Array, h_ptr, (channels, h_frames))# Wrap the C pointer into a julia array.
     return h_frames, hw_matrix
 end
-#=
-#1. The Watcher (Runs in the background)
-event_task = @async begin
-    while isopen(ctx)
-        wait_unsafe!(ctx) # Blocks here at 0% CPU until a hardware event occurs
-        put!(event_channel, :hardware_changed) # Notify the rest of the app
-    end
-end#
-# 2. The Playback Loop (Runs in the foreground)
-while !buffer.stream.is_finished
-    # We don't 'wait' here because we don't want to stop the music 
-    # just to listen for a USB plug-in.
-    flush_events!(ctx) # Quickly check for errors/unplugs
-    sleep(0.01)        # Keep REPL alive for Ctrl+C
-end
-function enumerate_devices!(ctx::SoundIOContext)
-    #def_out = ccall((:soundio_default_output_device_index, libsoundio), Int32, (Ptr{Cvoid},), ctx.ptr[])
-    #def_in  = ccall((:soundio_default_input_device_index, libsoundio), Int32, (Ptr{Cvoid},), ctx.ptr[])
-    count = ccall((:soundio_output_device_count, libsoundio), Cint, (Ptr{Cvoid},), ctx.ptr[])
-    #out_count = ccall((:soundio_output_device_count, libsoundio), Int32, (Ptr{Cvoid},), ctx.ptr[])
-    #for i in 0:(out_count - 1)
-    #    dev_ptr = ccall((:soundio_get_output_device, libsoundio), Ptr{Cvoid}, (Ptr{Cvoid}, Int32), ctx.ptr[], i)
-    #    name_ptr = unsafe_load(convert(Ptr{Cstring}, dev_ptr + 16))
-    #    push!(ctx.devices, SoundIODevice(dev_ptr, unsafe_string(name_ptr), false, i == def_out))
-    #end
-    def_idx = ccall((:soundio_default_output_device_index, libsoundio), Cint, (Ptr{Cvoid},), ctx.ptr[])
-    for i in 0:(count-1)
-        dev_ptr = ccall((:soundio_get_output_device, libsoundio), Ptr{Cvoid}, (Ptr{Cvoid}, Cint), ctx.ptr[], i)
-        name_ptr = unsafe_load(convert(Ptr{Cstring}, dev_ptr + 16))
-        push!(ctx.devices, SoundIODevice(dev_ptr, unsafe_string(name_ptr), false, i == def_idx))
-    end
-    #in_count = ccall((:soundio_input_device_count, libsoundio), Int32, (Ptr{Cvoid},), ctx.ptr[])
-    #for i in 0:(in_count - 1)
-    #    dev_ptr = ccall((:soundio_get_input_device, libsoundio), Ptr{Cvoid}, (Ptr{Cvoid}, Int32), ctx.ptr[], i)
-    #    name_ptr = unsafe_load(convert(Ptr{Cstring}, dev_ptr + 16))
-    #    push!(ctx.devices, SoundIODevice(dev_ptr, unsafe_string(name_ptr), true, i == def_in))
-    #end
-    
-    #out_count = ccall((:soundio_output_device_count, libsoundio), Int32, (Ptr{Cvoid},), ctx.ptr[])
-    #in_count = ccall((:soundio_input_device_count, libsoundio), Int32, (Ptr{Cvoid},), ctx.ptr[])
-    #devices = SoundIODevice[]
-    # Process Outputs
-    #for i in 0:(out_count-1)
-    #    dev_ptr = ccall((:soundio_get_output_device, libsoundio), Ptr{Cvoid}, (Ptr{Cvoid}, Int32), ctx.ptr[], i)
-        # Offset 16 is the 'name' pointer in SoundIoDevice (v2.0.0 x64)
-    #    name_ptr = unsafe_load(convert(Ptr{Cstring}, dev_ptr + 16))
-    #    push!(devices, SoundIODevice(dev_ptr, unsafe_string(name_ptr), false))
-        # Note: We don't unref here yet if we want to keep the pointer valid in SoundIODevice
-    #end
-    #return devices
-    #end
-end
-=#
