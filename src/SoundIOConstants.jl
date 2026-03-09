@@ -1,13 +1,31 @@
 # Pre-resolving the memory address of the function to bypass lookup in the shared library's symbol table.
 const libsoundio = libsoundio_jll.libsoundio_path
-#const libsoundio = "C:\\Users\\manue\\Downloads\\libsoundio_build\\products\\libsoundio.v2.0.0.x86_64-w64-mingw32\\bin\\libsoundio.dll"
-const soundio_wait_events_ptr = Libdl.dlsym(Libdl.dlopen(libsoundio), :soundio_wait_events)
-const soundio_outstream_begin_write_ptr = Libdl.dlsym(Libdl.dlopen(libsoundio), :soundio_outstream_begin_write)
-const soundio_outstream_end_write_ptr = Libdl.dlsym(Libdl.dlopen(libsoundio), :soundio_outstream_end_write)
+#const libsoundio = raw"C:\\Users\\manue\\Downloads\\libsoundio_build\\products\\libsoundio.v2.0.0.x86_64-w64-mingw32\\bin\\libsoundio.dll"
+const lib_h = Libdl.dlopen(libsoundio)
+const soundio_wait_events_ptr            = Libdl.dlsym(lib_h, :soundio_wait_events)
+const soundio_outstream_begin_write_ptr  = Libdl.dlsym(lib_h, :soundio_outstream_begin_write)
+const soundio_outstream_end_write_ptr    = Libdl.dlsym(lib_h, :soundio_outstream_end_write)
+struct DeviceEnumeratorPtrs
+    count::Ptr{Cvoid}
+    default_offset::Ptr{Cvoid}
+    get_device_ptr::Ptr{Cvoid}
+end
+const DEVICE_ENUMERATOR_OUTPUT_PTRS = DeviceEnumeratorPtrs(
+    Libdl.dlsym(lib_h, :soundio_output_device_count),
+    Libdl.dlsym(lib_h, :soundio_default_output_device_index),
+    Libdl.dlsym(lib_h, :soundio_get_output_device)
+)
+const DEVICE_ENUMERATOR_INPUT_PTRS = DeviceEnumeratorPtrs(
+    Libdl.dlsym(lib_h, :soundio_input_device_count),
+    Libdl.dlsym(lib_h, :soundio_default_input_device_index),
+    Libdl.dlsym(lib_h, :soundio_get_input_device)
+)
+const soundio_device_unref_ptr = Libdl.dlsym(lib_h, :soundio_device_unref)
 const SoundIOBackendMemoryOffsetBytes = 32
 const SoundIOBackendNone = 0
 const SOUNDIO_DEVICE_FORMATS_OFFSET = 112
 const SOUNDIO_DEVICE_FORMAT_COUNT_OFFSET = 120
+const SOUNDIO_DEVICE_IS_RAW_OFFSET = 208
 # Little Endian (3 bytes), Big Endian
 const SoundIoFormats = Dict{Symbol, Int32}(
     :Invalid        => 0 ,
