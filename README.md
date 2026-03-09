@@ -50,9 +50,10 @@ schedule(worker_task)
 🔍 Self-Documenting Interactivity
 
 A core goal of SoundIO.jl is to support the development of code that is self-documenting in nature. By mapping low-level C constants to idiomatic Julia Symbols, your source code remains readable and intent-driven:
-Readable Formats: Use symbols like :Int16Little, :Int32Little, or :Float32Big instead of magic numbers.
-Expressive Errors: Hardware issues are surfaced as descriptive symbols such as :BackendDisconnected or :OpeningDeviceFailed.
-Rich REPL Inspection: Custom show methods provide immediate visual feedback on the state of your audio stack.
+
+*   **Readable Formats**: Use symbols like :Int16Little, :Int32Little, or :Float32Big instead of magic numbers.
+*   **Expressive Errors**: Hardware issues are surfaced as descriptive symbols such as :BackendDisconnected or :OpeningDeviceFailed.
+*   **Rich REPL Inspection**: Custom show methods provide immediate visual feedback on the state of your audio stack.
 ```
 julia> ctx = SoundIOContext(); connect!(ctx); enumerate_devices!(ctx);
 julia> ctx
@@ -65,16 +66,17 @@ SoundIOContext(🟢 Connected, 4 Devices, 1 Active Streams)
 📂 Demos & Testing
 
 For a complete example of how to load and play back a high-quality WAV file using the threaded worker pattern, please refer to:
-/test/SoundIODemo.jl: Core logic for streaming from RAM and 24-bit alignment.
-/test/SoundIOTest.jl: Entry point for running the demo on your local machine
+*   **/test/SoundIODemo.jl**: Core logic for streaming from RAM and 24-bit alignment.
+*   **/test/SoundIOTest.jl**: Entry point for running the demo on your local machine
 
 🛡 Safety & Implementation
 
-Reference Counting: SoundIODevice automatically manages C-side reference counts to prevent use-after-free errors.
-GC Preservation: Critical buffers are wrapped in GC.@preserve blocks during playback to ensure the C-thread always has a valid memory address.
-Error Handling: Instead of raw integers, errors are returned as clean Julia symbols (e.g., :BackendDisconnected, :BufferUnderflow, :OutOfMemory).
+*   **Reference Counting**: SoundIODevice automatically manages C-side reference counts to prevent use-after-free errors.
+*   **GC Preservation**: Critical buffers are wrapped in GC.@preserve blocks during playback to ensure the C-thread always has a valid memory address.
+*   **Error Handling**: Instead of raw integers, errors are returned as clean Julia symbols (e.g., :BackendDisconnected, :BufferUnderflow, :OutOfMemory).
 
 License
 
 SoundIO.jl: MIT License (c) 2026 mj2984
+
 libsoundio: MIT License (c) 2015 Andrew Kelley
