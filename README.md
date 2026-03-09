@@ -7,7 +7,6 @@ In the delicate balance between performance, power, and API convenience, the sca
 ## 🚀 Key Features
 *   **Zero-Allocation Callbacks**: Optimized memory offsets bypass expensive symbol lookups, allowing C to call Julia without significant overhead.
 *   **Threaded Synchronicity**: A custom `AudioCallbackSynchronizer` and `@atomic` status flags bridge the gap between high-priority C audio threads and Julia tasks.
-*   **WAV Native Integration**: Built-in support for playing native audio formats (like 24-bit audio in 32-bit containers) directly from RAM.
 *   **No Manual Setup**: Leverages `libsoundio_jll` for seamless binary management across Windows, macOS, and Linux.
 
 🛠 Quick Start: Playback from RAM
