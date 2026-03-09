@@ -10,10 +10,27 @@ struct SoundIoChannelLayout
 end
 # Internal C-struct for safe pointer access
 struct SoundIoDevice_C
-    soundio::Ptr{Cvoid}
-    id::Ptr{Cchar}
-    name::Ptr{Cchar}
+    soundio::Ptr{Cvoid}  # Offset 0
+    id::Ptr{Cchar}       # Offset 8
+    name::Ptr{Cchar}     # Offset 16
+    aim::Cint            # Offset 24 (1=Input, 2=Output)
     # ... other fields ignored as we access via struct padding
+    #=
+    layout_count::Cint       # 28
+    layouts::Ptr{Cvoid}      # 32
+    current_layout::SoundIoChannelLayout # 40 (Size: ~104 bytes)
+    format_count::Cint       # 144
+    formats::Ptr{Cint}       # 152
+    current_format::Cint     # 160
+    sample_rate_count::Cint  # 164
+    sample_rates::Ptr{Cvoid} # 168
+    sample_rate_current::Cint # 176
+    software_latency_min::Cdouble # 184
+    software_latency_max::Cdouble # 192
+    software_latency_current::Cdouble # 200
+    is_raw::UInt8            # 208
+    ref_count::Cint          # 212
+    =#
 end
 mutable struct SoundIoOutStream_C
     device::Ptr{Cvoid}
@@ -40,17 +57,21 @@ struct SoundIOOutStream
     format::Cint #Int32
     rate::Cint #Int32
 end
+struct SoundIODevicePtrs
+    device::Ptr{Cvoid}
+    ctx::Ptr{Cvoid}
+end
 struct SoundIODevice
-    ptr::Ptr{Cvoid}
+    ptrs::Base.RefValue{SoundIODevicePtrs}
     name::String
     id::String
     is_input::Bool
     is_default::Bool
     is_raw::Bool
     streams::Vector{SoundIOOutStream}
-    function SoundIODevice(ptr::Ptr{Cvoid}, name::String, id::String, is_input::Bool, is_default::Bool, is_raw::Bool)
-        ccall((:soundio_device_ref, libsoundio), Cvoid, (Ptr{Cvoid},), ptr) # Increment C-ref count to keep memory alive while this Julia object exists
-        return new(ptr, name, id, is_input, is_default, is_raw, SoundIOOutStream[])
+    function SoundIODevice(ctx_ptr::Ptr{Cvoid}, device_ptr::Ptr{Cvoid}, name::String, id::String, is_input::Bool, is_default::Bool, is_raw::Bool)
+        ccall((:soundio_device_ref, libsoundio), Cvoid, (Ptr{Cvoid},), device_ptr) # Increment C-ref count to keep memory alive while this Julia object exists
+        return new(Ref(SoundIODevicePtrs(device_ptr, ctx_ptr)), name, id, is_input, is_default, is_raw, SoundIOOutStream[])
         # Decrement Ref Count on GC
         #=finalizer(dev) do d
             for s in d.streams
@@ -61,13 +82,13 @@ struct SoundIODevice
         return dev
         =#
     end
-    function SoundIODevice(ptr::Ptr{Cvoid}, is_default::Bool) 
-        c_dev = unsafe_load(convert(Ptr{SoundIoDevice_C}, ptr))
-        name_str = unsafe_string(c_dev.name) #Fetch Strings from the C-struct
+    function SoundIODevice(ctx_ptr::Ptr{Cvoid}, device_ptr::Ptr{Cvoid}, is_default::Bool)
+        c_dev = unsafe_load(convert(Ptr{SoundIoDevice_C}, device_ptr))
+        name_str = unsafe_string(c_dev.name)
         id_str   = unsafe_string(c_dev.id)
-        is_input = unsafe_load(convert(Ptr{Cint}, ptr + 8)) == 1 # 'aim' (1=Input, 2=Output) #Extract Boolean Flags
-        is_raw   = unsafe_load(convert(Ptr{UInt8}, ptr + 24)) != 0 # val = true if raw\
-        return SoundIODevice(ptr, name_str, id_str, is_input, is_default, is_raw)
+        is_input = c_dev.aim == 0
+        is_raw = unsafe_load(convert(Ptr{UInt8}, device_ptr + SOUNDIO_DEVICE_IS_RAW_OFFSET)) == 0
+        return SoundIODevice(ctx_ptr, device_ptr, name_str, id_str, is_input, is_default, is_raw)
     end
 end
 struct SoundIOContext
