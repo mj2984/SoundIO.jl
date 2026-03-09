@@ -120,7 +120,7 @@ function SoundIOContext(f::Function)
         close(ctx) 
     end
 end
-function enumerate_devices!(ctx::SoundIOContext)
+function enumerate_devices_unsafe!(ctx::SoundIOContext)
     # 1. Ensure we have a valid connection
     #connect!(ctx)
     flush_events!(ctx)
@@ -135,18 +135,13 @@ function enumerate_devices!(ctx::SoundIOContext)
     def_idx = ccall((:soundio_default_output_device_index, libsoundio), Cint, (Ptr{Cvoid},), ctx.ptr[])
     for i in 0:(count-1)
         dev_ptr = ccall((:soundio_get_output_device, libsoundio), Ptr{Cvoid}, (Ptr{Cvoid}, Cint), ctx.ptr[], i)
-        # Access C fields via our helper struct to get name/id strings
-        c_dev = unsafe_load(convert(Ptr{SoundIoDevice_C}, dev_ptr))
-        # New SoundIODevice triggers ccall(:soundio_device_ref) and sets finalizer
-        push!(ctx.devices, SoundIODevice(
-            dev_ptr, 
-            unsafe_string(c_dev.name), 
-            unsafe_string(c_dev.id), 
-            false,
-            i == def_idx
-        ))
-        # Drop the temporary reference from get_output_device
-        ccall((:soundio_device_unref, libsoundio), Cvoid, (Ptr{Cvoid},), dev_ptr)
+        push!(ctx.devices, SoundIODevice(dev_ptr, i == def_idx))
+        ccall((:soundio_device_unref, libsoundio), Cvoid, (Ptr{Cvoid},), dev_ptr) # Drop the temporary reference from get_output_device
+    end
+end
+function enumerate_devices!(ctx::SoundIOContext)
+    if(is_connected(ctx))
+        enumerate_devices_unsafe!(ctx)
     end
 end
 list_devices(ctx::SoundIOContext) = ctx.devices
@@ -199,6 +194,30 @@ function reopen!(stream::SoundIOOutStream)
 end
 start!(stream::SoundIOOutStream) = ccall((:soundio_outstream_start, libsoundio), Cint, (Ptr{Cvoid},), stream.ptr)
 #check_soundio_err(ccall((:soundio_outstream_start, libsoundio), Cint, (Ptr{Cvoid},), out_ptr))
+function supported_formats(device::SoundIODevice)
+    formats = Symbol[]
+    device.ptr == C_NULL && return formats
+
+    # 1. Read the number of formats (Int32)
+    count_ptr = convert(Ptr{Cint}, device.ptr + SOUNDIO_DEVICE_FORMAT_COUNT_OFFSET)
+    count = unsafe_load(count_ptr)
+    
+    # 2. Read the pointer to the formats array (enum SoundIoFormat*)
+    formats_ptr_ptr = convert(Ptr{Ptr{Cint}}, device.ptr + SOUNDIO_DEVICE_FORMATS_OFFSET)
+    formats_array_ptr = unsafe_load(formats_ptr_ptr)
+    
+    if formats_array_ptr != C_NULL
+        for i in 0:(count-1)
+            # Read each format integer from the array
+            f_int = unsafe_load(formats_array_ptr, i + 1)
+            # Match integer to our Symbol map
+            for (sym, val) in SoundIoFormats
+                val == f_int && push!(formats, sym)
+            end
+        end
+    end
+    return formats
+end
 function play_audio(audio_data::Matrix{Int32}, sample_rate::Integer, ctx::SoundIOContext, device::SoundIODevice, format::fmtType) where fmtType <: Union{Symbol,Int32}
     channels, frames = size(audio_data)
     # state = PlaybackState(pointer(audio_data), frames, 0, channels, true)
