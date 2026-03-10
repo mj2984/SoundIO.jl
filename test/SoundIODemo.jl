@@ -3,8 +3,8 @@ using .SoundIO
 using WAV
 # A simple audio streamer that plays from RAM (audio_data).
 # Example of pure julia pipeline to interface with SoundIO buffers.
-function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer, audio_data::Matrix{Int32})
-    channels, total_frames = size(audio_data)
+function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T}, audio_data::Matrix{T}) where T
+    total_frames = size(audio_data, 2)
     current_frame = 0 
     #=
     bytes_per_sample = sizeof(Int32)
@@ -16,23 +16,24 @@ function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer, audio_data
             (!(@atomic sync.is_active)) && return
             ccall(:jl_cpu_pause, Cvoid, ())
         end
-        h_frames::Int, hw_matrix = get_callbackSyncData(sync,channels)
-        rem_frames = total_frames - current_frame
-        to_copy = min(h_frames, rem_frames)
+        current_buffer::Matrix{T} = sync.current_buffer
+        buffer_frames::Int = size(current_buffer, 2)
+        rem_frames::Int = total_frames - current_frame
+        to_copy::Int = min(buffer_frames, rem_frames)
         if to_copy > 0
             #=
             src_offset_ptr = convert(Ptr{UInt8}, src_base_ptr) + (current_frame * bytes_per_frame)
             dst_ptr = convert(Ptr{UInt8}, h_ptr)
             unsafe_copyto!(dst_ptr, src_offset_ptr, to_copy * bytes_per_frame)
             =#
-            @views copyto!(hw_matrix[:, 1:to_copy], audio_data[:, current_frame+1:current_frame+to_copy])
-            if to_copy < h_frames
+            @views copyto!(current_buffer[:, 1:to_copy], audio_data[:, current_frame+1:current_frame+to_copy])
+            if to_copy < buffer_frames
                 #=
                 silence_ptr = dst_ptr + (to_copy * bytes_per_frame)
-                silence_bytes = (h_frames - to_copy) * bytes_per_frame
+                silence_bytes = (buffer_frames - to_copy) * bytes_per_frame
                 ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), silence_ptr, 0, silence_bytes)
                 =#
-                @views fill!(hw_matrix[:, to_copy+1:end], Int32(0))
+                @views fill!(current_buffer[:, to_copy+1:end], zero(T))
             end
             current_frame += to_copy
         end
@@ -41,8 +42,9 @@ function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer, audio_data
     end
 end
 # Uses the audio_streamer_ram_playback to manage streaming.
-function play_audio_threaded(audio_data::Matrix{Int32}, sample_rate::Integer, ctx::SoundIOContext, device::SoundIODevice, format::fmtType) where {fmtType <: Union{Symbol,Int32}}
-    sync = AudioCallbackSynchronizer()
+function play_audio_threaded(audio_data::Matrix{T}, sample_rate::Integer, ctx::SoundIOContext, device::SoundIODevice, format::fmtType) where {fmtType <: Union{Symbol,Int32},T}
+    channels = size(audio_data, 1)
+    sync = AudioCallbackSynchronizer{T}(channels)
     # worker_task = Threads.@spawn run_audio_worker!(sync, audio_data)
     worker_task = @task audio_streamer_ram_playback(sync, audio_data)
     ccall(:jl_set_task_tid, Cvoid, (Any, Int16), worker_task, 5) 
@@ -84,8 +86,8 @@ function play_music(path)
         audio_device = filter(d -> (!d.is_input) & (d.is_raw), ctx.devices)[1]
         println("🎶 Playing: $path")
         println("Keys: [p]ause/resume, [s]eek forward 10s, [v]olume down, [q]uit")
-        play_audio(audio_data,Int(sample_rate),ctx,audio_device,destination_format)
-        #play_audio_threaded(audio_data,Int32(sample_rate),ctx,audio_device,destination_format)
+        #play_audio(audio_data,Int(sample_rate),ctx,audio_device,destination_format)
+        play_audio_threaded(audio_data,Int32(sample_rate),ctx,audio_device,destination_format)
         println("Finished!")
     end
 end
