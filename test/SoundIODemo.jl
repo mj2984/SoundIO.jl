@@ -86,8 +86,8 @@ function play_music(path)
         audio_device = filter(d -> (!d.is_input) & (d.is_raw), ctx.devices)[1]
         println("🎶 Playing: $path")
         println("Keys: [p]ause/resume, [s]eek forward 10s, [v]olume down, [q]uit")
-        #play_audio(audio_data,Int(sample_rate),ctx,audio_device,destination_format)
-        play_audio_threaded(audio_data,Int32(sample_rate),ctx,audio_device,destination_format)
+        play_audio(audio_data,Int(sample_rate),ctx,audio_device,destination_format)
+        #play_audio_threaded(audio_data,Int32(sample_rate),ctx,audio_device,destination_format)
         println("Finished!")
     end
 end
