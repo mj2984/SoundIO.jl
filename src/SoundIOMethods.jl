@@ -51,10 +51,13 @@ function frozen_audio_callback(output_stream_ptr::Ptr{SoundIoOutStream_C}, frame
     return nothing
 end
 function realtime_audio_callback(output_stream_ptr::Ptr{SoundIoOutStream_C}, frames_min::Cint, frames_max::Cint)
-    sync::AudioCallbackSynchronizer = get_audio_buffer(output_stream_ptr)
+    sync = get_audio_buffer(output_stream_ptr)::AudioCallbackSynchronizer
     sync._frames_ref[] = frames_max
     ccall(soundio_outstream_begin_write_ptr, Cint, (Ptr{Cvoid}, Ptr{Ptr{SoundIoChannelArea_C}}, Ptr{Cint}), output_stream_ptr, sync._areas_ref, sync._frames_ref)
-    if sync._frames_ref[] > 0
+    actual_frames = sync._frames_ref[]
+    if actual_frames > 0
+        h_ptr = unsafe_load(sync._areas_ref[]).ptr |> Ptr{eltype(sync.current_buffer)}
+        @atomic sync.current_buffer = unsafe_wrap(Array, h_ptr, (sync.channels, Int(actual_frames)))
         @atomic sync.status = 1 # Signal Julia Worker
         while (@atomic sync.status) != 2
             if !(@atomic sync.is_active) break end
@@ -246,11 +249,4 @@ function play_audio(audio_data::Matrix{T}, sample_rate::Integer, ctx::SoundIOCon
         end
     end=#
     #println("✅ Playback finished.")
-end
-
-@inline function get_callbackSyncData(sync::AudioCallbackSynchronizer,channels)
-    h_frames::Int = sync._frames_ref[]
-    h_ptr = unsafe_load(sync._areas_ref[]).ptr |> Ptr{Int32}
-    hw_matrix = unsafe_wrap(Array, h_ptr, (channels, h_frames))# Wrap the C pointer into a julia array.
-    return h_frames, hw_matrix
 end
