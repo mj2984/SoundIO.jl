@@ -106,8 +106,8 @@ mutable struct SoundIORingBuffer
 end
 =#
 # --- Playback Logic ---
-struct FrozenAudioLayout # The "Map": Immutable description of the static memory
-    data_ptr::Ptr{Int32}
+struct FrozenAudioLayout{T} # The "Map": Immutable description of the static memory
+    data_ptr::Ptr{T}
     total_frames::Int64
     channels::Int32
 end
@@ -119,13 +119,13 @@ mutable struct FrozenAudioStream # The "Engine": Mutable state for the active pl
     _frames_ref::Base.RefValue{Cint}
 end
 abstract type SoundIOSynchronizer end
-mutable struct FrozenAudioBuffer <: SoundIOSynchronizer # The "Container": The single object we track in Julia
-    layout::FrozenAudioLayout
+mutable struct FrozenAudioBuffer{T} <: SoundIOSynchronizer # The "Container": The single object we track in Julia
+    layout::FrozenAudioLayout{T}
     stream::FrozenAudioStream
-    function FrozenAudioBuffer(ptr::Ptr{Int32}, frames::Integer, channels::Integer)
+    function FrozenAudioBuffer(ptr::Ptr{T}, frames::Integer, channels::Integer) where {T}
         layout = FrozenAudioLayout(ptr, Int64(frames), Int32(channels))
         stream = FrozenAudioStream(0, true, false, Ref{Ptr{SoundIoChannelArea_C}}(), Ref{Cint}(0))
-        return new(layout, stream)
+        return new{T}(layout, stream)
     end
 end
 mutable struct AudioCallbackSynchronizer <: SoundIOSynchronizer # A thread-safe "Mailbox" to communicate between C-callback and Julia Task
