@@ -109,7 +109,7 @@ end
 struct FrozenAudioLayout{T} # The "Map": Immutable description of the static memory
     data_ptr::Ptr{T}
     total_frames::Int64
-    channels::Int32
+    bytes_per_frame::Int32
 end
 mutable struct FrozenAudioStream # The "Engine": Mutable state for the active playback
     current_frame::Int64
@@ -123,7 +123,7 @@ mutable struct FrozenAudioBuffer{T} <: SoundIOSynchronizer # The "Container": Th
     layout::FrozenAudioLayout{T}
     stream::FrozenAudioStream
     function FrozenAudioBuffer(ptr::Ptr{T}, frames::Integer, channels::Integer) where {T}
-        layout = FrozenAudioLayout(ptr, Int64(frames), Int32(channels))
+        layout = FrozenAudioLayout(ptr, Int64(frames), Int32(channels*sizeof(T)))
         stream = FrozenAudioStream(0, true, false, Ref{Ptr{SoundIoChannelArea_C}}(), Ref{Cint}(0))
         return new{T}(layout, stream)
     end
