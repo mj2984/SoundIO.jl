@@ -63,6 +63,8 @@ end
 function align_audio_bytes!(data,source_bits::T,destination_format::Symbol) where {T<:Integer}
     if(source_bits == 24 && destination_format == :Int32Little)
         map!(x -> x << 8, data,data)
+    elseif(source_bits == 16 && destination_format == :Int32Little)
+        map!(x -> x << 16, data,data)
     end
 end
 @inline function process_audio(path,destination_format::Symbol)
@@ -70,6 +72,7 @@ end
     # NOTE:: wavread updated to produce native format (interleaved audio). The raw_layout argument is only available in a fork.
     # raw_layout = true is equivalent to permutedims(audio_data,(2,1)) if audio_data came from raw_layout = false
     audio_data,sample_rate, nbits, opt = wavread(path, format = "native", raw_layout = true)
+    audio_data = Int32.(audio_data)
     align_audio_bytes!(audio_data,nbits,destination_format)
     return audio_data, sample_rate
 end
