@@ -128,10 +128,12 @@ mutable struct FrozenAudioBuffer{T} <: SoundIOSynchronizer # The "Container": Th
         return new{T}(layout, stream)
     end
 end
-mutable struct AudioCallbackSynchronizer <: SoundIOSynchronizer # A thread-safe "Mailbox" to communicate between C-callback and Julia Task
+mutable struct AudioCallbackSynchronizer{T} <: SoundIOSynchronizer
     @atomic status::Int         # 0=Idle, 1=C-Ready, 2=Julia-Done
     @atomic is_active::Bool
+    channels::Int
     _areas_ref::Base.RefValue{Ptr{SoundIoChannelArea_C}}
     _frames_ref::Base.RefValue{Cint}
-    AudioCallbackSynchronizer() = new(0, true, Ref{Ptr{SoundIoChannelArea_C}}(), Ref{Cint}(0))
+    @atomic current_buffer::Matrix{T}
+    AudioCallbackSynchronizer{T}(channels::Integer) where {T} = new{T}(0, true, Int(channels), Ref{Ptr{SoundIoChannelArea_C}}(), Ref{Cint}(0), Matrix{T}(undef, 0, 0))
 end
