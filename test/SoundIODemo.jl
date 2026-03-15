@@ -1,50 +1,113 @@
 include(raw"../src/SoundIO.jl")
 using .SoundIO
 using WAV
+using PtrArrays
 # A simple audio streamer that plays from RAM (audio_data).
 # Example of pure julia pipeline to interface with SoundIO buffers.
-function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T}, audio_data::Matrix{T}) where T
+@inline function acquire_sound_buffer(sync::AudioCallbackSynchronizer{T,channels}) where {T,channels}
+    while (@atomic sync.status) != CallbackStatusReady
+        ((@atomic sync.status) < 0) && return sync.status
+        ccall(:jl_cpu_pause, Cvoid, ())
+    end
+    buffer_ref = sync.buffer_ref
+    actual_frames = Int(buffer_ref.frames[])
+    hardware_ptr = unsafe_load(buffer_ref.areas[]).ptr
+    return unsafe_wrap(Matrix{T}, convert(Ptr{T}, hardware_ptr), (channels, actual_frames)) # Create the zero-allocation Matrix view
+end
+@inline function release_sound_buffer(sync::AudioCallbackSynchronizer,status::Int)
+    @atomic sync.status = Int8(status)
+    return
+end
+@inline release_sound_buffer(sync::AudioCallbackSynchronizer) = release_sound_buffer(sync,CallbackJuliaDone)
+@inline function audio_streamer_ram_playback_base!(current_buffer::Matrix{T},audio_data_remaining::AbstractMatrix{T}) where {T}
+    buffer_frames::Int = size(current_buffer, 2)
+    to_copy::Int = min(buffer_frames, size(audio_data_remaining,2))
+    if to_copy > 0
+        #=
+        src_offset_ptr = convert(Ptr{UInt8}, src_base_ptr) + (current_frame * bytes_per_frame)
+        dst_ptr = convert(Ptr{UInt8}, h_ptr)
+        unsafe_copyto!(dst_ptr, src_offset_ptr, to_copy * bytes_per_frame)
+        =#
+        @views copyto!(current_buffer[:, 1:to_copy], audio_data[:, 1:to_copy])
+        if to_copy < buffer_frames
+            #=
+            silence_ptr = dst_ptr + (to_copy * bytes_per_frame)
+            silence_bytes = (buffer_frames - to_copy) * bytes_per_frame
+            ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), silence_ptr, 0, silence_bytes)
+            =#
+            @views fill!(current_buffer[:, to_copy+1:end], zero(T))
+        end
+        #current_frame += to_copy
+    end
+    return to_copy
+    #release_sound_buffer(sync)
+end
+function audio_streamer_ram_playback_base!(buffer_error_enum::Int8,audio_data::AbstractMatrix{T}) where {T}
+    return Int(buffer_error_enum)
+end
+#=
+function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T,channels}, audio_data::Matrix{T}) where {T,channels}
     total_frames = size(audio_data, 2)
-    current_frame = 0 
+    current_frame_offset::Int = 0
     #=
     bytes_per_sample = sizeof(Int32)
     bytes_per_frame = channels * bytes_per_sample
     src_base_ptr = pointer(audio_data)
     =#
+    while(current_frame_offset < total_frames)
+        current_buffer = acquire_sound_buffer(sync)
+        copied_or_error::Int  = audio_streamer_ram_playback_base!(current_buffer,view(audio_data,current_frame_offset+1:total_frames))
+        if(copied_or_error > 0)
+            current_frame_offset += copied_or_error
+            release_status::Int8 = ifelse(current_frame_offset==total_frames,CallbackInactive,CallbackJuliaDone)
+            release_sound_buffer(sync,release_status)
+        else
+            # Hardware signaled a stop/error via Int8
+            # throw error
+        end
+    end
+end
+=#
+function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T,channels}, audio_data::Matrix{T}) where {T,channels}
+    total_frames = size(audio_data, 2)
+    current_frame = 0 
+
     while (@atomic sync.is_active) && current_frame < total_frames
+        # Wait for C-callback to signal 'Ready'
         while (@atomic sync.status) != 1
             (!(@atomic sync.is_active)) && return
             ccall(:jl_cpu_pause, Cvoid, ())
         end
-        current_buffer::Matrix{T} = sync.current_buffer
-        buffer_frames::Int = size(current_buffer, 2)
-        rem_frames::Int = total_frames - current_frame
-        to_copy::Int = min(buffer_frames, rem_frames)
+        
+        # Fetch the buffer that was wrapped in the C-callback
+        curr_buf = @atomic sync.current_buffer
+        buf_frames = size(curr_buf, 2)
+        rem_frames = total_frames - current_frame
+        to_copy = min(buf_frames, rem_frames)
+        
         if to_copy > 0
-            #=
-            src_offset_ptr = convert(Ptr{UInt8}, src_base_ptr) + (current_frame * bytes_per_frame)
-            dst_ptr = convert(Ptr{UInt8}, h_ptr)
-            unsafe_copyto!(dst_ptr, src_offset_ptr, to_copy * bytes_per_frame)
-            =#
-            @views copyto!(current_buffer[:, 1:to_copy], audio_data[:, current_frame+1:current_frame+to_copy])
-            if to_copy < buffer_frames
-                #=
-                silence_ptr = dst_ptr + (to_copy * bytes_per_frame)
-                silence_bytes = (buffer_frames - to_copy) * bytes_per_frame
-                ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), silence_ptr, 0, silence_bytes)
-                =#
-                @views fill!(current_buffer[:, to_copy+1:end], zero(T))
+            # Perform the copy
+            @views copyto!(curr_buf[:, 1:to_copy], audio_data[:, current_frame+1:current_frame+to_copy])
+            
+            # Fill silence if needed
+            if to_copy < buf_frames
+                @views fill!(curr_buf[:, to_copy+1:end], zero(T))
             end
             current_frame += to_copy
         end
-        (current_frame >= total_frames) && (@atomic sync.is_active = false)
+        
+        if current_frame >= total_frames
+            @atomic sync.is_active = false
+        end
+        
+        # Signal C-callback that Julia is Done
         @atomic sync.status = 2 
     end
 end
 # Uses the audio_streamer_ram_playback to manage streaming.
 function play_audio_threaded(audio_data::Matrix{T}, sample_rate::Integer, ctx::SoundIOContext, device::SoundIODevice, format::fmtType) where {fmtType <: Union{Symbol,Int32},T}
     channels = size(audio_data, 1)
-    sync = AudioCallbackSynchronizer{T}(channels)
+    sync = AudioCallbackSynchronizer(T,channels)
     # worker_task = Threads.@spawn run_audio_worker!(sync, audio_data)
     worker_task = @task audio_streamer_ram_playback(sync, audio_data)
     ccall(:jl_set_task_tid, Cvoid, (Any, Int16), worker_task, 5) 
@@ -63,30 +126,31 @@ function play_audio_threaded(audio_data::Matrix{T}, sample_rate::Integer, ctx::S
     println("Playback finished.")
 end
 function align_audio_bytes!(data,source_bits::T,destination_format::Symbol) where {T<:Integer}
+    println(source_bits)
     if(source_bits == 24 && destination_format == :Int32Little)
         map!(x -> x << 8, data,data)
     elseif(source_bits == 16 && destination_format == :Int32Little)
         map!(x -> x << 16, data,data)
     end
 end
-@inline function process_audio(path,destination_format::Symbol)
-    # 1. Load native Int32 (24-bit audio in 32-bit container)
-    # NOTE:: wavread updated to produce native format (interleaved audio). The raw_layout argument is only available in a fork.
-    # raw_layout = true is equivalent to permutedims(audio_data,(2,1)) if audio_data came from raw_layout = false
+@inline function process_audio(path)
     audio_data,sample_rate, nbits, opt = wavread(path, format = "native", raw_layout = true)
-    audio_data = Int32.(audio_data)
-    align_audio_bytes!(audio_data,nbits,destination_format)
-    return audio_data, sample_rate
+    if(nbits > 16)
+        destination_format = :Int32Little
+        align_audio_bytes!(audio_data,nbits,destination_format)
+    else
+        destination_format = :Int16Little
+    end
+    return audio_data, sample_rate, destination_format
 end
 function play_music(path)
-    destination_format = :Int32Little
-    audio_data,sample_rate = process_audio(sound_file,destination_format)
+    audio_data,sample_rate,destination_format::Symbol = process_audio(sound_file)
     SoundIOContext() do ctx
         enumerate_devices!(ctx)
         audio_device = filter(d -> (!d.is_input) & (d.is_raw), ctx.devices)[1]
         println("🎶 Playing: $path")
         println("Keys: [p]ause/resume, [s]eek forward 10s, [v]olume down, [q]uit")
-        play_audio(audio_data,Int(sample_rate),ctx,audio_device,destination_format)
+        play_audio(audio_data,Int(sample_rate),audio_device,destination_format)
         #play_audio_threaded(audio_data,Int32(sample_rate),ctx,audio_device,destination_format)
         println("Finished!")
     end
