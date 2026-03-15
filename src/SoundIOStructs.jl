@@ -106,34 +106,44 @@ mutable struct SoundIORingBuffer
 end
 =#
 # --- Playback Logic ---
+struct CallbackBufferRef{T,channels} # Pre-allocated to avoid GC churn in the high-speed callback
+    areas::Base.RefValue{Ptr{SoundIoChannelArea_C}}
+    frames::Base.RefValue{Cint}
+    CallbackBufferRef(T,channels) = new{T,channels}(Ref{Ptr{SoundIoChannelArea_C}}(), Ref{Cint}(0))
+end
 struct FrozenAudioLayout{T} # The "Map": Immutable description of the static memory
     data_ptr::Ptr{T}
     total_frames::Int64
-    bytes_per_frame::Int32
 end
-mutable struct FrozenAudioStream # The "Engine": Mutable state for the active playback
+mutable struct FrozenAudioStream{T,channels} # The "Engine": Mutable state for the active playback
     current_frame::Int64
-    is_playing::Bool
-    is_finished::Bool
-    _areas_ref::Base.RefValue{Ptr{SoundIoChannelArea_C}} # Pre-allocated to avoid GC churn in the high-speed callback
-    _frames_ref::Base.RefValue{Cint}
+    status::Int8 # either 2 or -1 as Julia is always done.
+    buffer_ref::CallbackBufferRef{T,channels}
 end
 abstract type SoundIOSynchronizer end
-mutable struct FrozenAudioBuffer{T} <: SoundIOSynchronizer # The "Container": The single object we track in Julia
+mutable struct FrozenAudioBuffer{T,channels} <: SoundIOSynchronizer # The "Container": The single object we track in Julia
     layout::FrozenAudioLayout{T}
-    stream::FrozenAudioStream
+    stream::FrozenAudioStream{T,channels}
     function FrozenAudioBuffer(ptr::Ptr{T}, frames::Integer, channels::Integer) where {T}
-        layout = FrozenAudioLayout(ptr, Int64(frames), Int32(channels*sizeof(T)))
-        stream = FrozenAudioStream(0, true, false, Ref{Ptr{SoundIoChannelArea_C}}(), Ref{Cint}(0))
-        return new{T}(layout, stream)
+        layout = FrozenAudioLayout(ptr, Int64(frames))
+        stream = FrozenAudioStream{T,channels}(0, CallbackJuliaDone, CallbackBufferRef(T,channels))
+        return new{T,channels}(layout, stream)
     end
 end
-mutable struct AudioCallbackSynchronizer{T} <: SoundIOSynchronizer # A thread-safe "Mailbox" to communicate between C-callback and Julia Task
+#=
+mutable struct AudioCallbackSynchronizer{T,channels} <: SoundIOSynchronizer # A thread-safe "Mailbox" to communicate between C-callback and Julia Task
+    @atomic status::Int8
+    buffer_ref::CallbackBufferRef{T,channels}
+    AudioCallbackSynchronizer(T,channels::Integer) = new{T,channels}(CallbackStatusIdle, CallbackBufferRef(T,channels))
+end
+=#
+mutable struct AudioCallbackSynchronizer{T,channels} <: SoundIOSynchronizer
     @atomic status::Int         # 0=Idle, 1=C-Ready, 2=Julia-Done
     @atomic is_active::Bool
-    channels::Int
-    _areas_ref::Base.RefValue{Ptr{SoundIoChannelArea_C}}
-    _frames_ref::Base.RefValue{Cint}
-    @atomic current_buffer::Matrix{T}
-    AudioCallbackSynchronizer{T}(channels::Integer) where {T} = new{T}(0, true, Int(channels), Ref{Ptr{SoundIoChannelArea_C}}(), Ref{Cint}(0), Matrix{T}(undef, 0, 0))
+    buffer_ref::CallbackBufferRef{T,channels}
+    @atomic current_buffer::Matrix{T} # The "Mailbox" for the hardware pointer
+    
+    AudioCallbackSynchronizer(T, channels::Integer) = new{T,channels}(
+        0, true, CallbackBufferRef(T,channels), Matrix{T}(undef, 0, 0)
+    )
 end
