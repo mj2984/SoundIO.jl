@@ -1,6 +1,6 @@
 # Pre-resolving the memory address of the function to bypass lookup in the shared library's symbol table.
-const libsoundio = libsoundio_jll.libsoundio_path
-#const libsoundio = raw"C:\\Users\\manue\\Downloads\\libsoundio_build\\products\\libsoundio.v2.0.0.x86_64-w64-mingw32\\bin\\libsoundio.dll"
+#const libsoundio = libsoundio_jll.libsoundio_path
+const libsoundio = raw"C:\\Users\\manue\\Downloads\\libsoundio_build\\products\\libsoundio.v2.0.0.x86_64-w64-mingw32\\bin\\libsoundio.dll"
 const lib_h = Libdl.dlopen(libsoundio)
 const soundio_wait_events_ptr            = Libdl.dlsym(lib_h, :soundio_wait_events)
 const soundio_outstream_begin_write_ptr  = Libdl.dlsym(lib_h, :soundio_outstream_begin_write)
@@ -53,4 +53,15 @@ const SoundIoErrorMap = Dict{Int32, Symbol}(
     13 => :Interrupted,
     14 => :BufferUnderflow,
     15 => :EncodingError,
+)
+const CallbackStatusIdle = Int8(0)
+const CallbackStatusReady = Int8(1)
+const CallbackJuliaDone = Int8(2)
+const CallbackInactive = Int8(-1)
+const CallbackStatusEnumerations = Dict{Int8,Symbol}(
+    CallbackStatusIdle => :idle,
+    CallbackStatusReady => :callback_ready,
+    CallbackJuliaDone => :julia_done,
+    CallbackInactive => :inactive, # completed <
+    -2 => :streaming_error
 )
