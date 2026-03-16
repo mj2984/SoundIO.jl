@@ -56,38 +56,20 @@ function frozen_audio_callback(output_stream_ptr::Ptr{SoundIoOutStream_C}, frame
     ccall(soundio_outstream_end_write_ptr, Cint, (Ptr{Cvoid},), output_stream_ptr) # Commit to Hardware
     return nothing
 end
-#=
 function realtime_audio_callback(output_stream_ptr::Ptr{SoundIoOutStream_C}, frames_min::Cint, frames_max::Cint)
     sync = get_audio_buffer(output_stream_ptr)::AudioCallbackSynchronizer
-    buffer_ref = sync.buffer_ref
-    buffer_ref.frames[] = frames_max
-    ccall(soundio_outstream_begin_write_ptr, Cint, (Ptr{Cvoid}, Ptr{Ptr{SoundIoChannelArea_C}}, Ptr{Cint}), output_stream_ptr, buffer_ref.areas, buffer_ref.frames)
-    actual_frames = buffer_ref.frames[]
-    if actual_frames > 0
-        @atomic sync.status = CallbackStatusReady 
-        while (@atomic sync.status) != CallbackJuliaDone 
-            if (@atomic sync.status) < 0 break end
-            ccall(:jl_cpu_pause, Cvoid, ())
-        end
-        @atomic sync.status = CallbackStatusIdle 
-    end
-    ccall(soundio_outstream_end_write_ptr, Cint, (Ptr{Cvoid},), output_stream_ptr)
-    return nothing
-end
-=#
-function realtime_audio_callback(output_stream_ptr::Ptr{SoundIoOutStream_C}, frames_min::Cint, frames_max::Cint)
-    sync = get_audio_buffer(output_stream_ptr)::AudioCallbackSynchronizer
-    if (@atomic sync.status) == 2
-        sync.buffer_ref.frames[] = frames_max
-        ccall(soundio_outstream_begin_write_ptr, Cint, (Ptr{Cvoid}, Ptr{Ptr{SoundIoChannelArea_C}}, Ptr{Cint}), output_stream_ptr, sync.buffer_ref.areas, sync.buffer_ref.frames)
-        actual_frames::Int = sync.buffer_ref.frames[]
+    if (@atomic sync.status) == CallbackJuliaDone
+        buffer_ref = sync.buffer_ref
+        buffer_ref.frames[] = frames_max
+        ccall(soundio_outstream_begin_write_ptr, Cint, (Ptr{Cvoid}, Ptr{Ptr{SoundIoChannelArea_C}}, Ptr{Cint}), output_stream_ptr, buffer_ref.areas, buffer_ref.frames)
+        actual_frames::Int = buffer_ref.frames[]
         sample_type = get_sample_type(sync.buffer_ref)
         channel_count = get_channel_count(sync.buffer_ref)
         if actual_frames > 0
             h_ptr = unsafe_load(sync.buffer_ref.areas[]).ptr
             @atomic sync.current_buffer = unsafe_wrap(Matrix{sample_type}, convert(Ptr{sample_type}, h_ptr), (channel_count, actual_frames)) # This update must be atomic so the worker task sees the new Matrix header
-            @atomic sync.status = 1 # Signal the Julia side that the hardware buffer is ready
-            while (@atomic sync.status) == 1 # Spin-lock until Julia signals done or an error occurs
+            @atomic sync.status = CallbackStatusReady # Signal the Julia side that the hardware buffer is ready
+            while (@atomic sync.status) == CallbackStatusReady # Spin-lock until Julia signals done or an error occurs
                 ccall(:jl_cpu_pause, Cvoid, ())
             end
         end
@@ -200,7 +182,7 @@ function open_sound_stream_unsafe!(ptr::Ptr{SoundIoOutStream_C})
     result = ccall((:soundio_outstream_open, libsoundio), Cint, (Ptr{Cvoid},), ptr)
     return result
 end
-function Base.open(device::SoundIODevice, buffer::T, sample_rate::Integer, format::Int32, latency_seconds::Float64 = 3.0) where {T <: SoundIOSynchronizer}
+function open_sound_stream(device::SoundIODevice, buffer::T, sample_rate::Integer, format::Int32, latency_seconds::Float64 = 3.0) where {T <: SoundIOSynchronizer}
     out_ptr = initialize_sound_stream(device)
     s = unsafe_load(out_ptr) # Load C-struct, update fields
     s.format, s.sample_rate, s.userdata, s.software_latency = Cint(format), Cint(sample_rate), pointer_from_objref(buffer), latency_seconds
@@ -215,11 +197,19 @@ function Base.open(device::SoundIODevice, buffer::T, sample_rate::Integer, forma
     push!(device.streams, stream) 
     return stream
 end
-function Base.open(device::SoundIODevice, buffer::T, sample_rate::Integer, format::Symbol, latency_seconds::Float64 = 1.0) where {T <: SoundIOSynchronizer}
+function open_sound_stream(device::SoundIODevice, buffer::T, sample_rate::Integer, format::Symbol, latency_seconds::Float64 = 1.0) where {T <: SoundIOSynchronizer}
     if !haskey(SoundIoFormats, format)
         error("Unknown SoundIO format: :$format. Available: $(keys(SoundIoFormats))")
     end
-    return open(device, buffer, sample_rate, SoundIoFormats[format], latency_seconds)
+    return open_sound_stream(device, buffer, sample_rate, SoundIoFormats[format], latency_seconds)
+end
+function Base.open(device::SoundIODevice, bufferspec, channels::Integer, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0)
+    if(bufferspec isa Tuple{Ptr{T},Integer} where T)
+        buffer = FrozenAudioBuffer(bufferspec...,channels)
+    else
+        buffer = AudioCallbackSynchronizer(bufferspec,channels)
+    end
+    return open_sound_stream(device, buffer, sample_rate, format, latency_seconds)
 end
 # 4. Resume existing stream. (Streams persist over context changes)
 function reopen!(stream::SoundIOOutStream)
@@ -243,6 +233,12 @@ function start!(stream::SoundIOOutStream)
         set_julia_start_message(stream.sync,Int8(-2))
     end
 end
+@inline destroy_sound_stream_unsafe(stream::SoundIOOutStream) = ccall((:soundio_outstream_destroy, libsoundio), Cvoid, (Ptr{Cvoid},), stream.ptr)
+@inline function destroy_sound_stream!(device::SoundIODevice,stream_enumeration::Int)
+    stream = device.streams[stream_enumeration]
+    destroy_sound_stream(stream)
+    deleteat!(stream,stream_enumeration)
+end
 #check_soundio_err(ccall((:soundio_outstream_start, libsoundio), Cint, (Ptr{Cvoid},), out_ptr))
 function supported_formats(device::SoundIODevice)
     formats = Symbol[]
@@ -265,9 +261,9 @@ function supported_formats(device::SoundIODevice)
 end
 function play_audio(audio_data::Matrix{T}, sample_rate::Integer, device::SoundIODevice, format::fmtType) where {fmtType <: Union{Symbol,Int32}, T<:Number}
     channels, frames = size(audio_data)
-    GC.@preserve audio_data begin # Preserve audio data and the buffer object from GC during the C thread's run
-        buffer = FrozenAudioBuffer(pointer(audio_data), frames, channels) # Create our modular "Frozen" structure
-        stream = open(device, buffer, sample_rate, format)
+    GC.@preserve audio_data begin # Preserve audio data from GC during the C thread's run
+        stream = open(device, (pointer(audio_data), frames), channels, sample_rate, format)
+        buffer = stream.sync
         start!(stream)
         #println("🔊 Playback started. Press Ctrl+C to stop.")
         try
