@@ -4,21 +4,6 @@ using WAV
 using PtrArrays
 # A simple audio streamer that plays from RAM (audio_data).
 # Example of pure julia pipeline to interface with SoundIO buffers.
-@inline function acquire_sound_buffer(sync::AudioCallbackSynchronizer{T,channels}) where {T,channels}
-    while (@atomic sync.status) != CallbackStatusReady
-        ((@atomic sync.status) < 0) && return sync.status
-        ccall(:jl_cpu_pause, Cvoid, ())
-    end
-    buffer_ref = sync.buffer_ref
-    actual_frames = Int(buffer_ref.frames[])
-    hardware_ptr = unsafe_load(buffer_ref.areas[]).ptr
-    return unsafe_wrap(Matrix{T}, convert(Ptr{T}, hardware_ptr), (channels, actual_frames)) # Create the zero-allocation Matrix view
-end
-@inline function release_sound_buffer(sync::AudioCallbackSynchronizer,status::Int)
-    @atomic sync.status = Int8(status)
-    return
-end
-@inline release_sound_buffer(sync::AudioCallbackSynchronizer) = release_sound_buffer(sync,CallbackJuliaDone)
 @inline function audio_streamer_ram_playback_base!(current_buffer::Matrix{T},audio_data_remaining::AbstractMatrix{T}) where {T}
     buffer_frames::Int = size(current_buffer, 2)
     to_copy::Int = min(buffer_frames, size(audio_data_remaining,2))
@@ -68,44 +53,36 @@ function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T,channels}
     end
 end
 =#
-function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T,channels}, audio_data::Matrix{T}) where {T,channels}
-    total_frames = size(audio_data, 2)
-    current_frame = 0 
-
-    while (@atomic sync.is_active) && current_frame < total_frames
-        # Wait for C-callback to signal 'Ready'
-        while (@atomic sync.status) != 1
-            (!(@atomic sync.is_active)) && return
-            ccall(:jl_cpu_pause, Cvoid, ())
+function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T}, audio_data::Matrix{T}) where T
+    total_frames::Int = size(audio_data, 2)
+    current_frame::Int = 0
+    streaming_state::Symbol = :completed
+    while current_frame < total_frames
+        res::Union{Symbol,Matrix{T}} = acquire_sound_buffer(sync)
+        if res isa Symbol
+            streaming_state = res
+            break
         end
-        
-        # Fetch the buffer that was wrapped in the C-callback
-        curr_buf = @atomic sync.current_buffer
-        buf_frames = size(curr_buf, 2)
-        rem_frames = total_frames - current_frame
-        to_copy = min(buf_frames, rem_frames)
-        
-        if to_copy > 0
-            # Perform the copy
-            @views copyto!(curr_buf[:, 1:to_copy], audio_data[:, current_frame+1:current_frame+to_copy])
-            
-            # Fill silence if needed
-            if to_copy < buf_frames
-                @views fill!(curr_buf[:, to_copy+1:end], zero(T))
-            end
-            current_frame += to_copy
+        curr_buf::Matrix{T} = res
+        buf_frames::Int = size(curr_buf, 2)
+        rem_frames::Int = total_frames - current_frame
+        to_copy::Int = min(buf_frames, rem_frames)
+        @views copyto!(curr_buf[:, 1:to_copy], audio_data[:, current_frame+1:current_frame+to_copy])
+        if to_copy < buf_frames
+            @views fill!(curr_buf[:, to_copy+1:end], zero(T))
         end
-        
-        if current_frame >= total_frames
-            @atomic sync.is_active = false
+        current_frame += to_copy
+        if(current_frame < total_frames)
+            release_sound_buffer(sync)
         end
-        
-        # Signal C-callback that Julia is Done
-        @atomic sync.status = 2 
     end
+    if(streaming_state == :completed)
+        halt_sound_buffer(sync)
+    end
+    return streaming_state
 end
 # Uses the audio_streamer_ram_playback to manage streaming.
-function play_audio_threaded(audio_data::Matrix{T}, sample_rate::Integer, ctx::SoundIOContext, device::SoundIODevice, format::fmtType) where {fmtType <: Union{Symbol,Int32},T}
+function play_audio_threaded(audio_data::Matrix{T}, sample_rate::Integer, device::SoundIODevice, format::fmtType) where {fmtType <: Union{Symbol,Int32},T}
     channels = size(audio_data, 1)
     sync = AudioCallbackSynchronizer(T,channels)
     # worker_task = Threads.@spawn run_audio_worker!(sync, audio_data)
@@ -116,8 +93,8 @@ function play_audio_threaded(audio_data::Matrix{T}, sample_rate::Integer, ctx::S
     GC.@preserve audio_data sync begin
         stream = open(device, sync, sample_rate, format)
         start!(stream)
-        while (@atomic sync.is_active)
-            wait_unsafe(ctx) 
+        while (s = @atomic sync.status) > 0
+            wait_unsafe(device) 
             #yield()
         end
         ccall((:soundio_outstream_destroy, libsoundio), Cvoid, (Ptr{Cvoid},), stream.ptr)
@@ -150,8 +127,8 @@ function play_music(path)
         audio_device = filter(d -> (!d.is_input) & (d.is_raw), ctx.devices)[1]
         println("🎶 Playing: $path")
         println("Keys: [p]ause/resume, [s]eek forward 10s, [v]olume down, [q]uit")
-        play_audio(audio_data,Int(sample_rate),audio_device,destination_format)
-        #play_audio_threaded(audio_data,Int32(sample_rate),ctx,audio_device,destination_format)
+        #play_audio(audio_data,Int(sample_rate),audio_device,destination_format)
+        play_audio_threaded(audio_data,Int32(sample_rate),audio_device,destination_format)
         println("Finished!")
     end
 end
