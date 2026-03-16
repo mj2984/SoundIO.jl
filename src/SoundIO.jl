@@ -12,5 +12,6 @@ export SoundIOContext, SoundIODevice, SoundIOOutStream, FrozenAudioBuffer,
        is_connected_unsafe, is_connected,open_unsafe!, open!, connect_unsafe!, connect!,
        disconnect_unsafe!, disconnect!, flush_events_unsafe!, flush_events!, wait_unsafe,
        enumerate_devices_unsafe!, enumerate_devices!, play_audio, supported_formats,
-       start!
+       start!, CallbackStopped, CallbackJuliaDone, CallbackStatusReady,
+       acquire_sound_buffer, release_sound_buffer, halt_sound_buffer
 end
