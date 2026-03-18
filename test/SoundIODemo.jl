@@ -53,6 +53,7 @@ function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T,channels}
     end
 end
 =#
+#=
 function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T}, audio_data::Matrix{T}) where T
     total_frames::Int = size(audio_data, 2)
     current_frame::Int = 0
@@ -81,6 +82,37 @@ function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T}, audio_d
     end
     return streaming_state
 end
+=#
+function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T, Channels}, audio_data::Matrix{T}) where {T, Channels}
+    total_frames = size(audio_data, 2)
+    current_frame = 0
+    
+    while current_frame < total_frames
+        # Get raw pointer instead of a Matrix object
+        dst_ptr, buf_frames = acquire_sound_buffer_ptr(sync)
+        dst_ptr == C_NULL && break # Stream was stopped
+        
+        to_copy = min(buf_frames, total_frames - current_frame)
+        
+        # Calculate source location
+        # Since audio_data is a Matrix, we get a pointer to the start of the 'current_frame' column
+        src_ptr = pointer(audio_data, (current_frame * Channels) + 1)
+        
+        # Blazing fast copy
+        unsafe_copyto!(dst_ptr, src_ptr, to_copy * Channels)
+        
+        # Zero out remainder if necessary
+        if to_copy < buf_frames
+            silence_ptr = dst_ptr + (to_copy * Channels * sizeof(T))
+            ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), 
+                  silence_ptr, 0, (buf_frames - to_copy) * Channels * sizeof(T))
+        end
+        
+        current_frame += to_copy
+        release_sound_buffer(sync)
+    end
+    halt_sound_buffer(sync)
+end
 # Uses the audio_streamer_ram_playback to manage streaming.
 function play_audio_threaded(audio_data::Matrix{T}, sample_rate::Integer, device::SoundIODevice, format::fmtType) where {fmtType <: Union{Symbol,Int32},T}
     stream = open(device, T, size(audio_data, 1), sample_rate, format)
@@ -102,7 +134,6 @@ function play_audio_threaded(audio_data::Matrix{T}, sample_rate::Integer, device
     println("Playback finished.")
 end
 function align_audio_bytes!(data,source_bits::T,destination_format::Symbol) where {T<:Integer}
-    println(source_bits)
     if(source_bits == 24 && destination_format == :Int32Little)
         map!(x -> x << 8, data,data)
     elseif(source_bits == 16 && destination_format == :Int32Little)
@@ -126,8 +157,8 @@ function play_music(path)
         audio_device = filter(d -> (!d.is_input) & (d.is_raw), ctx.devices)[1]
         println("🎶 Playing: $path")
         println("Keys: [p]ause/resume, [s]eek forward 10s, [v]olume down, [q]uit")
-        #play_audio(audio_data,Int(sample_rate),audio_device,destination_format)
-        play_audio_threaded(audio_data,Int32(sample_rate),audio_device,destination_format)
+        play_audio(audio_data,Int(sample_rate),audio_device,destination_format)
+        #play_audio_threaded(audio_data,Int32(sample_rate),audio_device,destination_format)
         println("Finished!")
     end
 end
