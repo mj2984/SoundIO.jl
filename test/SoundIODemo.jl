@@ -4,61 +4,15 @@ using WAV
 using PtrArrays
 # A simple audio streamer that plays from RAM (audio_data).
 # Example of pure julia pipeline to interface with SoundIO buffers.
-@inline function audio_streamer_ram_playback_base!(current_buffer::Matrix{T},audio_data_remaining::AbstractMatrix{T}) where {T}
-    buffer_frames::Int = size(current_buffer, 2)
-    to_copy::Int = min(buffer_frames, size(audio_data_remaining,2))
-    if to_copy > 0
-        #=
-        src_offset_ptr = convert(Ptr{UInt8}, src_base_ptr) + (current_frame * bytes_per_frame)
-        dst_ptr = convert(Ptr{UInt8}, h_ptr)
-        unsafe_copyto!(dst_ptr, src_offset_ptr, to_copy * bytes_per_frame)
-        =#
-        @views copyto!(current_buffer[:, 1:to_copy], audio_data[:, 1:to_copy])
-        if to_copy < buffer_frames
-            #=
-            silence_ptr = dst_ptr + (to_copy * bytes_per_frame)
-            silence_bytes = (buffer_frames - to_copy) * bytes_per_frame
-            ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), silence_ptr, 0, silence_bytes)
-            =#
-            @views fill!(current_buffer[:, to_copy+1:end], zero(T))
-        end
-        #current_frame += to_copy
-    end
-    return to_copy
-    #release_sound_buffer(sync)
-end
-function audio_streamer_ram_playback_base!(buffer_error_enum::Int8,audio_data::AbstractMatrix{T}) where {T}
-    return Int(buffer_error_enum)
-end
-#=
-function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T,channels}, audio_data::Matrix{T}) where {T,channels}
-    total_frames = size(audio_data, 2)
-    current_frame_offset::Int = 0
-    #=
-    bytes_per_sample = sizeof(Int32)
-    bytes_per_frame = channels * bytes_per_sample
-    src_base_ptr = pointer(audio_data)
-    =#
-    while(current_frame_offset < total_frames)
-        current_buffer = acquire_sound_buffer(sync)
-        copied_or_error::Int  = audio_streamer_ram_playback_base!(current_buffer,view(audio_data,current_frame_offset+1:total_frames))
-        if(copied_or_error > 0)
-            current_frame_offset += copied_or_error
-            release_status::Int8 = ifelse(current_frame_offset==total_frames,CallbackInactive,CallbackJuliaDone)
-            release_sound_buffer(sync,release_status)
-        else
-            # Hardware signaled a stop/error via Int8
-            # throw error
-        end
-    end
-end
-=#
-#=
-function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T}, audio_data::Matrix{T}) where T
+function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T, Channels}, audio_data::Matrix{T}) where {T, Channels}
     total_frames::Int = size(audio_data, 2)
+    #=
     current_frame::Int = 0
     streaming_state::Symbol = :completed
+    =#
+    current_frame::Int = 0
     while current_frame < total_frames
+        #=
         res::Union{Symbol,Matrix{T}} = acquire_sound_buffer(sync)
         if res isa Symbol
             streaming_state = res
@@ -72,46 +26,28 @@ function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T}, audio_d
         if to_copy < buf_frames
             @views fill!(curr_buf[:, to_copy+1:end], zero(T))
         end
+        =#
+        dst_ptr, buf_frames = acquire_sound_buffer_ptr(sync)
+        dst_ptr == C_NULL && break
+        to_copy = min(buf_frames, total_frames - current_frame)
+        src_ptr = pointer(audio_data, (current_frame * Channels) + 1)
+        unsafe_copyto!(dst_ptr, src_ptr, to_copy * Channels)
+        if to_copy < buf_frames
+            silence_ptr = dst_ptr + (to_copy * Channels * sizeof(T))
+            ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), silence_ptr, 0, (buf_frames - to_copy) * Channels * sizeof(T))
+        end
         current_frame += to_copy
         if(current_frame < total_frames)
             release_sound_buffer(sync)
         end
     end
+    halt_sound_buffer(sync)
+    #=
     if(streaming_state == :completed)
         halt_sound_buffer(sync)
     end
     return streaming_state
-end
-=#
-function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T, Channels}, audio_data::Matrix{T}) where {T, Channels}
-    total_frames = size(audio_data, 2)
-    current_frame = 0
-    
-    while current_frame < total_frames
-        # Get raw pointer instead of a Matrix object
-        dst_ptr, buf_frames = acquire_sound_buffer_ptr(sync)
-        dst_ptr == C_NULL && break # Stream was stopped
-        
-        to_copy = min(buf_frames, total_frames - current_frame)
-        
-        # Calculate source location
-        # Since audio_data is a Matrix, we get a pointer to the start of the 'current_frame' column
-        src_ptr = pointer(audio_data, (current_frame * Channels) + 1)
-        
-        # Blazing fast copy
-        unsafe_copyto!(dst_ptr, src_ptr, to_copy * Channels)
-        
-        # Zero out remainder if necessary
-        if to_copy < buf_frames
-            silence_ptr = dst_ptr + (to_copy * Channels * sizeof(T))
-            ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), 
-                  silence_ptr, 0, (buf_frames - to_copy) * Channels * sizeof(T))
-        end
-        
-        current_frame += to_copy
-        release_sound_buffer(sync)
-    end
-    halt_sound_buffer(sync)
+    =#
 end
 # Uses the audio_streamer_ram_playback to manage streaming.
 function play_audio_threaded(audio_data::Matrix{T}, sample_rate::Integer, device::SoundIODevice, format::fmtType) where {fmtType <: Union{Symbol,Int32},T}
