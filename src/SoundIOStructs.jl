@@ -20,10 +20,10 @@ struct FrozenAudioLayout{T} # The "Map": Immutable description of the static mem
 end
 mutable struct FrozenAudioStream # The "Engine": Mutable state for the active playback
     current_frame::Int64
-    status::Int8 # either 2 or -1 as Julia is always done.
+    status::Int8 # either 2 or -1 as Julia is always done. # TODO: Make the status atomic.
 end
 abstract type SoundIOSynchronizer end
-mutable struct FrozenAudioBuffer{T,Channels} <: SoundIOSynchronizer # The "Container": The single object we track in Julia
+struct FrozenAudioBuffer{T,Channels} <: SoundIOSynchronizer # The "Container": The single object we track in Julia
     layout::FrozenAudioLayout{T}
     stream::FrozenAudioStream
     function FrozenAudioBuffer(ptr::Ptr{T}, frames::Integer, Channels::Integer) where {T}
@@ -86,7 +86,7 @@ struct SoundIOOutStream{T <: SoundIOSynchronizer}
     ptr::Ptr{SoundIoOutStream_C}
     format::Cint #Int32
     rate::Cint #Int32
-    sync::T
+    sync::Ref{T}
     callback_ptr::Base.CFunction
 end
 struct SoundIODevicePtrs
