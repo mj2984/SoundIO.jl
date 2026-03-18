@@ -69,11 +69,9 @@ function realtime_audio_callback(outstream_ptr::Ptr{SoundIoOutStream_C}, frames_
     if (@atomic sync.status) == CallbackJuliaDone
         buffer_ptr, actual_frames = negotiate_callback_buffer_space(outstream_ptr, frames_max)
         if actual_frames > 0
-            # Atomically publish the raw facts to the worker
             @atomic sync.data_ptr = buffer_ptr
             @atomic sync.actual_frames = Int32(actual_frames)
-            @atomic sync.status = CallbackStatusReady 
-            # Spin-lock
+            @atomic sync.status = CallbackStatusReady
             while (@atomic sync.status) == CallbackStatusReady
                 ccall(:jl_cpu_pause, Cvoid, ())
             end
@@ -273,32 +271,30 @@ function play_audio(audio_data::Matrix{T}, sample_rate::Integer, device::SoundIO
     channels, frames = size(audio_data)
     GC.@preserve audio_data begin # Preserve audio data from GC during the C thread's run
         stream = open(device, (pointer(audio_data), frames), channels, sample_rate, format)
-        buffer = stream.sync
+        buffer_stream::FrozenAudioStream = stream.sync.stream
         start!(stream)
         #println("🔊 Playback started. Press Ctrl+C to stop.")
         try
             # Main Control Loop
-            while buffer.stream.status == 2
+            while buffer_stream.status == 2
                 wait_unsafe(device) # wait_events is efficient; it sleeps the thread until an event occurs
                 #yield() Small sleep to yield to Julia scheduler for REPL interactivity
             end
         finally
-            ccall((:soundio_outstream_destroy, libsoundio), Cvoid, (Ptr{Cvoid},), stream.ptr) # Stop stream playback when done or interrupted
+            destroy_sound_stream_unsafe(stream) # Stop stream playback when done or interrupted
             #filter!(s -> s != stream_ptr, ctx.streams)
         end
     end
     #=
-        GC.@preserve audio_data state ctx audio_device begin
-        stream = open_outstream_direct(audio_device, SoundIO.S32LE, Int(sample_rate), state)
-        while state.current_frame < state.total_frames
-            wait_events(ctx)
-            sleep(0.1) # Main loop is idle, audio runs in background thread
-        end
-    end=#
+    while state.current_frame < state.total_frames
+        wait_events(ctx)
+        sleep(0.1) # Main loop is idle, audio runs in background thread
+    end
+    =#
     #println("✅ Playback finished.")
 end
-#=
-@inline function acquire_sound_buffer(sync::AudioCallbackSynchronizer{T,channels}) where {T,channels}
+@inline function acquire_sound_buffer_ptr(sync::AudioCallbackSynchronizer{T, Channels}) where {T, Channels}
+    #= Spin until ready
     s::Int8 = @atomic sync.status
     while s != CallbackStatusReady
         if s <= CallbackStopped
@@ -307,23 +303,20 @@ end
         ccall(:jl_cpu_pause, Cvoid, ())
         s = @atomic sync.status
     end
-    #=
-    buffer_ref = sync.buffer_ref
-    actual_frames = Int(buffer_ref.frames[])
-    hardware_ptr = unsafe_load(buffer_ref.areas[]).ptr
-    return unsafe_wrap(Matrix{T}, convert(Ptr{T}, hardware_ptr), (channels, actual_frames)) # Create the zero-allocation Matrix view
     =#
-    return @atomic sync.current_buffer
-end
-=#
-@inline function acquire_sound_buffer_ptr(sync::AudioCallbackSynchronizer{T, Channels}) where {T, Channels}
-    # Spin until ready
-    while (s = @atomic sync.status) != CallbackStatusReady
-        s <= CallbackStopped && return C_NULL, 0
+    while (s::Int8 = @atomic sync.status) != CallbackStatusReady
+        s <= CallbackStopped && return C_NULL, s
         ccall(:jl_cpu_pause, Cvoid, ())
     end
-    # Return the raw hardware details
     return convert(Ptr{T}, @atomic sync.data_ptr), Int(@atomic sync.actual_frames)
+end
+@inline function acquire_sound_buffer(sync::AudioCallbackSynchronizer{T,channels}) where {T,channels}
+    ptr, frames_or_status = acquire_sound_buffer_ptr(sync)
+    if ptr == C_NULL
+        return frames_or_status # Returns the Int8 status code
+    end
+    #return unsafe_wrap(Matrix{T}, convert(Ptr{T}, hardware_ptr), (channels, actual_frames)) # Create the zero-allocation Matrix view
+    return unsafe_wrap(Matrix{T}, ptr, (Channels, frames_or_status))
 end
 @inline function message_and_release_sound_buffer(sync::AudioCallbackSynchronizer,status::Int8)
     @atomic sync.status = status
