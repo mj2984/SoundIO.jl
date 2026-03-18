@@ -13,6 +13,6 @@ export SoundIOContext, SoundIODevice, SoundIOOutStream, FrozenAudioBuffer,
        disconnect_unsafe!, disconnect!, flush_events_unsafe!, flush_events!, wait_unsafe,
        enumerate_devices_unsafe!, enumerate_devices!, play_audio, supported_formats,
        start!, CallbackStopped, CallbackJuliaDone, CallbackStatusReady,
-       acquire_sound_buffer, release_sound_buffer, halt_sound_buffer,
+       acquire_sound_buffer_ptr, acquire_sound_buffer, release_sound_buffer, halt_sound_buffer,
        destroy_sound_stream_unsafe, destroy_sound_stream!
 end
