@@ -57,11 +57,12 @@ const SoundIoErrorMap = Dict{Int32, Symbol}(
 const CallbackStopped::Int8 = 0
 const CallbackStatusReady::Int8 = 1
 const CallbackJuliaDone::Int8 = 2
-const CallbackInactive::Int8 = -1
+#const CallbackInactive::Int8 = -1
 const CallbackStatusEnumerations = Dict{Int8,Symbol}(
     CallbackStopped => :callback_stopped,
     CallbackStatusReady => :callback_ready,
     CallbackJuliaDone => :julia_done,
-    CallbackInactive => :inactive, # completed <
-    -2 => :streaming_error
+    # Use negative of SoundIoErrorMap for error status.
+    #CallbackInactive => :inactive, # completed <
+    #-2 => :streaming_error
 )
