@@ -15,7 +15,7 @@ end
     ccall(soundio_outstream_begin_write_ptr, Cint, (Ptr{Cvoid}, Ptr{Ptr{SoundIoChannelArea_C}}, Ptr{Cint}), outstream_ptr, areas_ref, frames_ref)
     return unsafe_load(areas_ref[]).ptr, Int(frames_ref[]::Cint) # Note: unsafe_load(areas_ref[]) returns a SoundIoChannelArea_C
 end
-function frozen_audio_callback_boundary_handler!(stream::FrozenAudioStream,layout::FrozenAudioLayout{T},frames_to_copy,actual_frames,bytes_per_frame) where {T}
+function frozen_audio_callback_boundary_handler!(stream::FrozenAudioStream,layout::FrozenAudioLayout{T},destination_ptr,frames_to_copy,actual_frames,bytes_per_frame) where {T}
     silence_frames = actual_frames - frames_to_copy
     silence_ptr = destination_ptr + (frames_to_copy * bytes_per_frame)
     total_silence_bytes = silence_frames * bytes_per_frame
@@ -24,8 +24,9 @@ function frozen_audio_callback_boundary_handler!(stream::FrozenAudioStream,layou
         if @atomic(stream.status) == CallbackJuliaDone
             stream.current_frame = 0
         else
-            @atomic stream.status = CallbackStopped # :inactive
+            @atomic stream.status = CallbackStopped
         end
+        ccall(:uv_async_send, Cint, (Ptr{Cvoid},), stream.notify_handle.handle)
     end
 end
 function frozen_audio_callback(outstream_ptr::Ptr{SoundIoOutStream_C},frames_min::Cint,frames_max::Cint,::Type{BufType}) where {BufType<:FrozenAudioBuffer}
@@ -43,7 +44,7 @@ function frozen_audio_callback(outstream_ptr::Ptr{SoundIoOutStream_C},frames_min
         stream.current_frame += frames_to_copy
     end
     if frames_to_copy < actual_frames # Handle Silence / End-of-Buffer
-        frozen_audio_callback_boundary_handler!(stream,layout,frames_to_copy,actual_frames,bytes_per_frame)
+        frozen_audio_callback_boundary_handler!(stream,layout,destination_ptr,frames_to_copy,actual_frames,bytes_per_frame)
     end
     ccall(soundio_outstream_end_write_ptr, Cint, (Ptr{Cvoid},), outstream_ptr) # Commit to Hardware
     return nothing
@@ -229,7 +230,7 @@ end
 @inline destroy_sound_stream_unsafe(stream::SoundIOOutStream) = ccall((:soundio_outstream_destroy, libsoundio), Cvoid, (Ptr{Cvoid},), stream.ptr)
 @inline function destroy_sound_stream!(device::SoundIODevice,stream_enumeration::Int)
     stream = device.streams[stream_enumeration]
-    destroy_sound_stream(stream)
+    destroy_sound_stream_unsafe(stream) # TODO:: Destroy async event handles too.
     deleteat!(stream,stream_enumeration)
 end
 #check_soundio_err(ccall((:soundio_outstream_start, libsoundio), Cint, (Ptr{Cvoid},), out_ptr))
@@ -252,31 +253,10 @@ function supported_formats(device::SoundIODevice)
     end
     return formats
 end
-function play_audio(audio_data::Matrix{T}, sample_rate::Integer, device::SoundIODevice, format::fmtType) where {fmtType <: Union{Symbol,Int32}, T<:Number}
-    channels, frames = size(audio_data)
-    GC.@preserve audio_data begin # Preserve audio data from GC during the C thread's run
-        stream = open(device, (pointer(audio_data), frames), channels, sample_rate, format)
-        buffer_stream::FrozenAudioStream = stream.sync[].stream
-        start!(stream)
-        #println("🔊 Playback started. Press Ctrl+C to stop.")
-        try
-            # Main Control Loop
-            while buffer_stream.status == CallbackJuliaDone
-                wait_unsafe(device) # wait_events is efficient; it sleeps the thread until an event occurs
-                #yield() Small sleep to yield to Julia scheduler for REPL interactivity
-            end
-        finally
-            destroy_sound_stream_unsafe(stream) # Stop stream playback when done or interrupted
-            #filter!(s -> s != stream_ptr, ctx.streams)
-        end
-    end
-    #=
-    while state.current_frame < state.total_frames
-        wait_events(ctx)
-        sleep(0.1) # Main loop is idle, audio runs in background thread
-    end
-    =#
-    #println("✅ Playback finished.")
+@inline Base.wait(stream::FrozenAudioStream) = wait(stream.notify_handle)
+@inline function Base.close(stream::FrozenAudioStream)
+    @atomic stream.status = CallbackStopped
+    close(stream.notify_handle)
 end
 @inline function acquire_sound_buffer_ptr(sync::AudioCallbackSynchronizer{T, Channels}) where {T, Channels}
     local msg::AudioCallbackMessage
