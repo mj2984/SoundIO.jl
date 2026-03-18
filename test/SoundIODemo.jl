@@ -60,7 +60,7 @@ function play_audio_threaded(audio_data::Matrix{T}, sample_rate::Integer, device
     schedule(worker_task)
     GC.@preserve audio_data begin
         start!(stream)
-        while (s = @atomic sync.status) > 0
+        while (s = @atomic sync.message).status > 0
             wait_unsafe(device)
             #yield()
         end
