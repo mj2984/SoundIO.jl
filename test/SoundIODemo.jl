@@ -52,7 +52,7 @@ end
 # Uses the audio_streamer_ram_playback to manage streaming.
 function play_audio_threaded(audio_data::Matrix{T}, sample_rate::Integer, device::SoundIODevice, format::fmtType) where {fmtType <: Union{Symbol,Int32},T}
     stream = open(device, T, size(audio_data, 1), sample_rate, format)
-    sync = stream.sync
+    sync = stream.sync[]
     # worker_task = Threads.@spawn run_audio_worker!(sync, audio_data)
     worker_task = @task audio_streamer_ram_playback(sync, audio_data)
     ccall(:jl_set_task_tid, Cvoid, (Any, Int16), worker_task, 5) 
