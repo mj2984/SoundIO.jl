@@ -32,11 +32,14 @@ struct FrozenAudioBuffer{T,Channels} <: SoundIOSynchronizer # The "Container": T
         return new{T,Channels}(layout, stream)
     end
 end
+struct AudioCallbackMessage
+    status::Int8
+    data_ptr::Ptr{Cvoid} # Raw hardware address
+    actual_frames::Int32 # Negotiated frame count
+end
 mutable struct AudioCallbackSynchronizer{T,Channels} <: SoundIOSynchronizer
-    @atomic status::Int8
-    @atomic data_ptr::Ptr{Cvoid}  # Raw hardware address
-    @atomic actual_frames::Int32 # Negotiated frame count
-    AudioCallbackSynchronizer(T, Channels::Integer) = new{T, Channels}(CallbackStopped, C_NULL, 0)
+    @atomic message::AudioCallbackMessage
+    AudioCallbackSynchronizer(T, Channels::Integer) = new{T, Channels}(AudioCallbackMessage(CallbackStopped, C_NULL, 0))
 end
 # Internal C-struct for safe pointer access
 struct SoundIoDevice_C
