@@ -86,6 +86,24 @@ end
     end
     return audio_data, sample_rate, destination_format
 end
+function play_audio(audio_data::Matrix{T}, sample_rate::Integer, device::SoundIODevice, format::fmtType) where {fmtType <: Union{Symbol,Int32}, T<:Number}
+    channels, frames = size(audio_data)
+    GC.@preserve audio_data begin # Preserve audio data from GC during the C thread's run
+        stream = open(device, (pointer(audio_data), frames), channels, sample_rate, format)
+        buffer_stream = stream.sync[].stream::FrozenAudioStream
+        start!(stream) #println("🔊 Playback started. Press Ctrl+C to stop.")
+        try
+            while @atomic(buffer_stream.status) == CallbackJuliaDone # Main Control Loop
+                wait(buffer_stream) #wait_unsafe(device) # wait_events is efficient; it sleeps the thread until an event occurs
+                #yield() Small sleep to yield to Julia scheduler for REPL interactivity
+            end
+        finally
+            close(buffer_stream)
+            destroy_sound_stream_unsafe(stream) # Stop stream playback when done or interrupted
+            #filter!(s -> s != stream_ptr, ctx.streams)
+        end
+    end
+end
 function play_music(path)
     audio_data,sample_rate,destination_format::Symbol = process_audio(sound_file)
     SoundIOContext() do ctx
@@ -112,34 +130,5 @@ while !buffer.stream.is_finished
     # just to listen for a USB plug-in.
     flush_events!(ctx) # Quickly check for errors/unplugs
     sleep(0.01)        # Keep REPL alive for Ctrl+C
-end
-=#
-#=
-function play_with_controls(path,target_fs)
-    @inline processed_audio,processed_sample_rate = process_audio(path,target_fs)
-    channels, frames = size(processed_audio)
-    #state = PlaybackState(pointer(processed_audio), frames, 0, channels, true)
-    buffer = FrozenAudioBuffer(pointer(processed_audio), frames, channels)
-    GC.@preserve processed_audio buffer begin
-        SoundIOContext() do ctx
-            enumerate_devices!(ctx)
-            device = filter(d -> !d.is_input, ctx.devices)[2]
-            stream = open_outstream_direct(device, buffer, Int(processed_sample_rate), :Int32Little)
-            
-            #println("🎶 Playing: $path")
-            #println("Keys: [p]ause/resume, [s]eek forward 10s, [v]olume down, [q]uit")
-            
-            while !buffer.stream.is_finished
-                wait_events(ctx)
-                #sleep(0.1) # Main loop is idle, audio runs in background thread
-                
-                # --- Example Real-Time Interaction ---
-                # state.volume = 0.5f0           # Half volume
-                # state.is_playing = false       # Pause
-                # state.current_frame += 960000  # Seek forward 10 seconds
-            end
-            #println("Finished!")
-        end
-    end
 end
 =#
