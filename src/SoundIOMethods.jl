@@ -2,7 +2,7 @@
 @inline function get_audio_buffer(output_stream_ptr::Ptr{SoundIoOutStream_C})
     userdata_ptr_ptr = convert(Ptr{Ptr{Cvoid}}, output_stream_ptr + SOUNDIO_OUTSTREAM_USERDATA_OFFSET) # Optimized: Jump directly to userdata to bypass the expensive unsafe_load(output_stream_ptr)
     raw_buffer_ptr   = unsafe_load(userdata_ptr_ptr)
-    return unsafe_pointer_to_objref(raw_buffer_ptr)
+    return unsafe_pointer_to_objref(raw_buffer_ptr)[]
     #=
     output_stream = unsafe_load(output_stream_ptr)
     buffer = unsafe_pointer_to_objref(output_stream.userdata)
@@ -191,9 +191,10 @@ function open_sound_stream_unsafe!(ptr::Ptr{SoundIoOutStream_C})
 end
 function open_sound_stream(device::SoundIODevice, buffer::T, sample_rate::Integer, format::Int32, latency_seconds::Float64 = 3.0) where {T <: SoundIOSynchronizer}
     out_ptr = initialize_sound_stream(device)
+    buffer_ref = Ref(buffer)
     callback = make_sound_output_callback(typeof(buffer))
     s = unsafe_load(out_ptr) # Load C-struct, update fields
-    s.format, s.sample_rate, s.userdata, s.software_latency = Cint(format), Cint(sample_rate), pointer_from_objref(buffer), latency_seconds
+    s.format, s.sample_rate, s.userdata, s.software_latency = Cint(format), Cint(sample_rate), pointer_from_objref(buffer_ref), latency_seconds
     s.write_callback = Base.unsafe_convert(Ptr{Cvoid}, callback)
     # s.error_callback = ERROR_CALLBACK (if defined) (Recommended)
     unsafe_store!(out_ptr, s) # Push back to C memory
@@ -201,7 +202,7 @@ function open_sound_stream(device::SoundIODevice, buffer::T, sample_rate::Intege
     result = open_sound_stream_unsafe!(out_ptr)
     open_sound_stream_error_check(result)
     # actual_s = unsafe_load(out_ptr) (Optional: Read back the actual achieved latency)
-    stream = SoundIOOutStream(out_ptr, s.format, s.sample_rate, buffer, callback) #latency_seconds, actual_s.software_latency
+    stream = SoundIOOutStream(out_ptr, s.format, s.sample_rate, buffer_ref, callback) #latency_seconds, actual_s.software_latency
     push!(device.streams, stream) 
     return stream
 end
@@ -235,10 +236,10 @@ function set_julia_start_message(sync::AudioCallbackSynchronizer,message::Int8)
     return nothing
 end
 function start!(stream::SoundIOOutStream)
-    set_julia_start_message(stream.sync,CallbackJuliaDone)
+    set_julia_start_message(stream.sync[],CallbackJuliaDone)
     result = ccall((:soundio_outstream_start, libsoundio), Cint, (Ptr{Cvoid},), stream.ptr)
     if(result != 0)
-        set_julia_start_message(stream.sync,Int8(-2))
+        set_julia_start_message(stream.sync[],Int8(-2))
     end
 end
 @inline destroy_sound_stream_unsafe(stream::SoundIOOutStream) = ccall((:soundio_outstream_destroy, libsoundio), Cvoid, (Ptr{Cvoid},), stream.ptr)
@@ -271,7 +272,7 @@ function play_audio(audio_data::Matrix{T}, sample_rate::Integer, device::SoundIO
     channels, frames = size(audio_data)
     GC.@preserve audio_data begin # Preserve audio data from GC during the C thread's run
         stream = open(device, (pointer(audio_data), frames), channels, sample_rate, format)
-        buffer_stream::FrozenAudioStream = stream.sync.stream
+        buffer_stream::FrozenAudioStream = stream.sync[].stream
         start!(stream)
         #println("🔊 Playback started. Press Ctrl+C to stop.")
         try
