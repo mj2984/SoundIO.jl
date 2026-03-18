@@ -16,18 +16,18 @@ end
 # --- Playback Logic ---
 struct FrozenAudioLayout{T} # The "Map": Immutable description of the static memory
     data_ptr::Ptr{T}
-    total_frames::Int64
+    total_frames::Int
 end
 mutable struct FrozenAudioStream # The "Engine": Mutable state for the active playback
-    current_frame::Int64
-    status::Int8 # either 2 or -1 as Julia is always done. # TODO: Make the status atomic.
+    current_frame::Int
+    @atomic status::Int8 # either 2 or -1 as Julia is always done. # TODO: Make the status atomic.
 end
 abstract type SoundIOSynchronizer end
 struct FrozenAudioBuffer{T,Channels} <: SoundIOSynchronizer # The "Container": The single object we track in Julia
     layout::FrozenAudioLayout{T}
     stream::FrozenAudioStream
     function FrozenAudioBuffer(ptr::Ptr{T}, frames::Integer, Channels::Integer) where {T}
-        layout = FrozenAudioLayout(ptr, Int64(frames))
+        layout = FrozenAudioLayout(ptr, Int(frames))
         stream = FrozenAudioStream(0, CallbackStopped)
         return new{T,Channels}(layout, stream)
     end
@@ -35,7 +35,7 @@ end
 struct AudioCallbackMessage
     status::Int8
     data_ptr::Ptr{Cvoid} # Raw hardware address
-    actual_frames::Int32 # Negotiated frame count
+    actual_frames::Int # Negotiated frame count
 end
 mutable struct AudioCallbackSynchronizer{T,Channels} <: SoundIOSynchronizer
     @atomic message::AudioCallbackMessage
