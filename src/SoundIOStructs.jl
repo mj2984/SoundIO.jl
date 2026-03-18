@@ -1,139 +1,286 @@
-# Low-Level C-Compatible Structs (Matching libsoundio headers)
-struct SoundIoChannelArea_C
-    ptr::Ptr{UInt8}
-    step::Cint
-end
-struct SoundIoChannelLayout
-    name::Ptr{Cchar}
-    channel_count::Cint #Int32
-    channels::NTuple{24, Cint} #NTuple{24, Int32}
-end
-#=
-mutable struct SoundIORingBuffer
-    ptr::Ptr{Cvoid}
-end
-=#
-# --- Playback Logic ---
-struct FrozenAudioLayout{T} # The "Map": Immutable description of the static memory
-    data_ptr::Ptr{T}
-    total_frames::Int
-end
-mutable struct FrozenAudioStream # The "Engine": Mutable state for the active playback
-    current_frame::Int
-    @atomic status::Int8 # either 2 or -1 as Julia is always done. # TODO: Make the status atomic.
-    notify_handle::Base.AsyncCondition
-    FrozenAudioStream() = new(0, CallbackStopped, Base.AsyncCondition())
-end
-abstract type SoundIOSynchronizer end
-struct FrozenAudioBuffer{T,Channels} <: SoundIOSynchronizer # The "Container": The single object we track in Julia
-    layout::FrozenAudioLayout{T}
-    stream::FrozenAudioStream
-    function FrozenAudioBuffer(ptr::Ptr{T}, frames::Integer, Channels::Integer) where {T}
-        layout = FrozenAudioLayout(ptr, Int(frames))
-        stream = FrozenAudioStream()
-        return new{T,Channels}(layout, stream)
-    end
-end
-struct AudioCallbackMessage
-    status::Int8
-    data_ptr::Ptr{Cvoid} # Raw hardware address
-    actual_frames::Int # Negotiated frame count
-end
-mutable struct AudioCallbackSynchronizer{T,Channels} <: SoundIOSynchronizer
-    @atomic message::AudioCallbackMessage
-    AudioCallbackSynchronizer(T, Channels::Integer) = new{T, Channels}(AudioCallbackMessage(CallbackStopped, C_NULL, 0))
-end
-# Internal C-struct for safe pointer access
-struct SoundIoDevice_C
-    soundio::Ptr{Cvoid}  # Offset 0
-    id::Ptr{Cchar}       # Offset 8
-    name::Ptr{Cchar}     # Offset 16
-    aim::Cint            # Offset 24 (1=Input, 2=Output)
-    # ... other fields ignored as we access via struct padding
+# --- The Audio Callback (Native Thread) ---
+@inline function get_audio_buffer(output_stream_ptr::Ptr{SoundIoOutStream_C}, ::Type{BufType}) where {BufType}
+    userdata_ptr_ptr = convert(Ptr{Ptr{Cvoid}}, output_stream_ptr + SOUNDIO_OUTSTREAM_USERDATA_OFFSET) # Optimized: Jump directly to userdata to bypass the expensive unsafe_load(output_stream_ptr)
+    raw_buffer_ptr   = unsafe_load(userdata_ptr_ptr)
+    buffer_ref = unsafe_pointer_to_objref(raw_buffer_ptr)::Ref{BufType}
+    return buffer_ref[]::BufType
     #=
-    layout_count::Cint       # 28
-    layouts::Ptr{Cvoid}      # 32
-    current_layout::SoundIoChannelLayout # 40 (Size: ~104 bytes)
-    format_count::Cint       # 144
-    formats::Ptr{Cint}       # 152
-    current_format::Cint     # 160
-    sample_rate_count::Cint  # 164
-    sample_rates::Ptr{Cvoid} # 168
-    sample_rate_current::Cint # 176
-    software_latency_min::Cdouble # 184
-    software_latency_max::Cdouble # 192
-    software_latency_current::Cdouble # 200
-    is_raw::UInt8            # 208
-    ref_count::Cint          # 212
+    output_stream = unsafe_load(output_stream_ptr)
+    buffer = unsafe_pointer_to_objref(output_stream.userdata)
     =#
 end
-mutable struct SoundIoOutStream_C
-    device::Ptr{Cvoid}
-    format::Cint #Int32
-    sample_rate::Cint #Int32
-    layout::SoundIoChannelLayout
-    software_latency::Cdouble #Float64
-    volume::Cfloat #Float32
-    userdata::Ptr{Cvoid}
-    write_callback::Ptr{Cvoid}
-    underflow_callback::Ptr{Cvoid}
-    error_callback::Ptr{Cvoid}
-    name::Ptr{Cchar}
-    non_terminal_hint::Cint #Int32
-    bytes_per_frame::Cint
-    bytes_per_sample::Cint
-    layout_error::Cint
+@inline function negotiate_callback_buffer_space(outstream_ptr::Ptr{SoundIoOutStream_C},requested_frames::Cint)
+    areas_ref = Ref{Ptr{SoundIoChannelArea_C}}()
+    frames_ref = Ref{Cint}(requested_frames) # Frames ref is both an input and output to soundio_outstream_begin_write_ptr. frames_max, frames_min is input from sound driver in the OS. User chooses a frame size based on this and the function checks and returns available memory (updates in place).
+    ccall(soundio_outstream_begin_write_ptr, Cint, (Ptr{Cvoid}, Ptr{Ptr{SoundIoChannelArea_C}}, Ptr{Cint}), outstream_ptr, areas_ref, frames_ref)
+    return unsafe_load(areas_ref[]).ptr, Int(frames_ref[]::Cint) # Note: unsafe_load(areas_ref[]) returns a SoundIoChannelArea_C
 end
-const SOUNDIO_OUTSTREAM_USERDATA_OFFSET = fieldoffset(SoundIoOutStream_C, 7)
-# --- High-Level Julia Wrappers ---
-# Pre-declare for the Device struct
-struct SoundIOOutStream{T <: SoundIOSynchronizer}
-    ptr::Ptr{SoundIoOutStream_C}
-    format::Cint #Int32
-    rate::Cint #Int32
-    sync::Ref{T}
-    callback_ptr::Base.CFunction
+function frozen_audio_callback_boundary_handler!(stream::FrozenAudioStream,source_ptr_base::Ptr{UInt8},destination_ptr::Ptr{UInt8},frames_to_copy::Int,actual_frames::Int,bytes_per_frame::Int)
+    status::Int8 = @atomic stream.status
+    pending_frames = actual_frames - frames_to_copy # The layout should be large enough that required data at any point is smaller than its full size.
+    starting_ptr = destination_ptr + (frames_to_copy * bytes_per_frame)
+    pending_bytes = pending_frames * bytes_per_frame
+    if(status == CallbackJuliaDone)
+        source_ptr = source_ptr_base
+        unsafe_copyto!(starting_ptr,source_ptr,pending_bytes)
+        stream.current_frame = pending_frames
+    else
+        ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), starting_ptr, 0, pending_bytes)
+        @atomic stream.status = CallbackStopped
+    end
+    ccall(:uv_async_send, Cint, (Ptr{Cvoid},), stream.notify_handle.handle)
 end
-struct SoundIODevicePtrs
-    device::Ptr{Cvoid}
-    ctx::Ptr{Cvoid}
+function frozen_audio_callback(outstream_ptr::Ptr{SoundIoOutStream_C},frames_min::Cint,frames_max::Cint,::Type{BufType}) where {BufType<:FrozenAudioBuffer}
+    buffer::BufType = get_audio_buffer(outstream_ptr,BufType)# Recover the Julia Object
+    T,Channels = BufType.parameters
+    bytes_per_frame::Int = Channels * sizeof(T)
+    layout, stream = buffer.layout, buffer.stream
+    buffer_ptr, actual_frames::Int = negotiate_callback_buffer_space(outstream_ptr,frames_max)
+    source_ptr_base = Base.unsafe_convert(Ptr{UInt8},layout.data_ptr)
+    destination_ptr = Base.unsafe_convert(Ptr{UInt8},buffer_ptr) # Base.unsafe_convert(Ptr{T},unsafe_load(buffer_ref.areas[]).ptr)
+    frames_to_copy::Int = min(actual_frames, layout.total_frames - stream.current_frame)
+    if frames_to_copy > 0 # (stream.status == CallbackJuliaDone) && # This check has been removed since we are not looking to halt memory playback during runtime.
+        source_ptr = source_ptr_base + (stream.current_frame * bytes_per_frame) # layout.data_ptr + (stream.current_frame * Channels)
+        data_bytes_to_copy = frames_to_copy * bytes_per_frame #data_to_copy = frames_to_copy * Channels # In Units of T
+        unsafe_copyto!(destination_ptr,source_ptr,data_bytes_to_copy) #unsafe_copyto!(destination_ptr, source_ptr, data_to_copy)
+        stream.current_frame += frames_to_copy
+    end
+    if frames_to_copy < actual_frames # Handle Silence / End-of-Buffer
+        frozen_audio_callback_boundary_handler!(stream,source_ptr_base,destination_ptr,frames_to_copy,actual_frames,bytes_per_frame)
+    end
+    ccall(soundio_outstream_end_write_ptr, Cint, (Ptr{Cvoid},), outstream_ptr) # Commit to Hardware
+    return nothing
 end
-struct SoundIODevice
-    ptrs::Base.RefValue{SoundIODevicePtrs}
-    name::String
-    id::String
-    is_input::Bool
-    is_default::Bool
-    is_raw::Bool
-    streams::Vector{SoundIOOutStream}
-    function SoundIODevice(ctx_ptr::Ptr{Cvoid}, device_ptr::Ptr{Cvoid}, name::String, id::String, is_input::Bool, is_default::Bool, is_raw::Bool)
-        ccall((:soundio_device_ref, libsoundio), Cvoid, (Ptr{Cvoid},), device_ptr) # Increment C-ref count to keep memory alive while this Julia object exists
-        return new(Ref(SoundIODevicePtrs(device_ptr, ctx_ptr)), name, id, is_input, is_default, is_raw, SoundIOOutStream[])
-        # Decrement Ref Count on GC
-        #=finalizer(dev) do d
-            for s in d.streams
-                ccall((:soundio_outstream_destroy, libsoundio), Cvoid, (Ptr{Cvoid},), s.ptr)
+function realtime_audio_callback(outstream_ptr::Ptr{SoundIoOutStream_C}, frames_min::Cint, frames_max::Cint, ::Type{BufType}) where {BufType<:AudioCallbackSynchronizer}
+    sync::BufType = get_audio_buffer(outstream_ptr,BufType)
+    message::AudioCallbackMessage = (@atomic sync.message)
+    if message.status == CallbackJuliaDone
+        buffer_ptr, actual_frames = negotiate_callback_buffer_space(outstream_ptr, frames_max)
+        if actual_frames > 0
+            @atomic sync.message = AudioCallbackMessage(CallbackStatusReady,buffer_ptr,actual_frames)
+            while (msg = @atomic sync.message).status == CallbackStatusReady
+                ccall(:jl_cpu_pause, Cvoid, ())
             end
-            ccall((:soundio_device_unref, libsoundio), Cvoid, (Ptr{Cvoid},), d.ptr)
         end
-        return dev
-        =#
     end
-    function SoundIODevice(ctx_ptr::Ptr{Cvoid}, device_ptr::Ptr{Cvoid}, is_default::Bool)
-        c_dev = unsafe_load(convert(Ptr{SoundIoDevice_C}, device_ptr))
-        name_str = unsafe_string(c_dev.name)
-        id_str   = unsafe_string(c_dev.id)
-        is_input = c_dev.aim == 0
-        is_raw = unsafe_load(convert(Ptr{UInt8}, device_ptr + SOUNDIO_DEVICE_IS_RAW_OFFSET)) == 0
-        return SoundIODevice(ctx_ptr, device_ptr, name_str, id_str, is_input, is_default, is_raw)
+    ccall(soundio_outstream_end_write_ptr, Cint, (Ptr{Cvoid},), outstream_ptr)
+    return nothing
+end
+function make_sound_output_callback(::Type{BufType}) where {BufType<:FrozenAudioBuffer}
+    callback = (outstream_ptr, frames_min, frames_max) -> frozen_audio_callback(outstream_ptr, frames_min, frames_max, BufType) # Define the specific closure
+    return @cfunction($callback, Cvoid, (Ptr{SoundIoOutStream_C}, Cint, Cint)) # Use $ to interpolate the closure into the macro
+end
+function make_sound_output_callback(::Type{BufType}) where {BufType<:AudioCallbackSynchronizer}
+    callback = (outstream_ptr, frames_min, frames_max) -> realtime_audio_callback(outstream_ptr, frames_min, frames_max, BufType)
+    return @cfunction($callback, Cvoid, (Ptr{SoundIoOutStream_C}, Cint, Cint))
+end
+# Lifecycle & Check
+@inline SoundIO_isopen_context(ctx_ptr) = ctx_ptr != C_NULL
+@inline Base.isopen(ctx::SoundIOContext) = SoundIO_isopen_context(ctx.ptr[])
+# Connectivity
+is_connected_unsafe(ctx::SoundIOContext) = unsafe_load(convert(Ptr{Cint}, ctx.ptr[] + SoundIOBackendMemoryOffsetBytes)) != SoundIOBackendNone
+is_connected(ctx::SoundIOContext) = isopen(ctx) && is_connected_unsafe(ctx)
+# Allocation
+function open_unsafe!(ctx::SoundIOContext)
+    ctx.ptr[] = ccall((:soundio_create, libsoundio), Ptr{Cvoid}, ())
+    ctx.ptr[] == C_NULL && error("Failed to re-allocate SoundIO context.")
+    return
+end
+function open!(ctx::SoundIOContext)
+    !isopen(ctx) && open_unsafe!(ctx)
+    return
+end
+# Handshake
+connect_unsafe!(ctx::SoundIOContext) = ccall((:soundio_connect, libsoundio), Cint, (Ptr{Cvoid},), ctx.ptr[]) != 0 && error("Connect failed")
+function connect!(ctx::SoundIOContext)
+    !isopen(ctx) && open!(ctx)
+    !is_connected(ctx) && connect_unsafe!(ctx)
+    return
+end
+# Severing
+disconnect_unsafe!(ctx::SoundIOContext) = ccall((:soundio_disconnect, libsoundio), Cvoid, (Ptr{Cvoid},), ctx.ptr[])
+function disconnect!(ctx::SoundIOContext)
+    if isopen(ctx) && is_connected(ctx)
+        disconnect_unsafe!(ctx)
     end
 end
-struct SoundIOContext
-    ptr::Base.RefValue{Ptr{Cvoid}}
-    devices::Vector{SoundIODevice}
-    function SoundIOContext()
-        p = ccall((:soundio_create, libsoundio), Ptr{Cvoid}, ())
-        p == C_NULL && error("Failed to create SoundIO context")
-        return new(Ref(p), SoundIODevice[])
+# Cleanup
+function Base.close(ctx::SoundIOContext)
+    if isopen(ctx)
+        disconnect!(ctx)
+        empty!(ctx.devices)
+        ccall((:soundio_destroy, libsoundio), Cvoid, (Ptr{Cvoid},), ctx.ptr[])
+        ctx.ptr[] = C_NULL
+        #println("🧹 SoundIO Resources Released.")
     end
 end
+# Event Management
+flush_events_unsafe!(ctx::SoundIOContext) = ccall((:soundio_flush_events, libsoundio), Cvoid, (Ptr{Cvoid},), ctx.ptr[])
+flush_events!(ctx::SoundIOContext) = isopen(ctx) && flush_events_unsafe!(ctx)
+# Blocking Wait
+# Note: soundio_wait_events blocks the thread until an event occurs.
+@inline SoundIO_wait_unsafe(ctx_ptr) = ccall(soundio_wait_events_ptr, Cvoid, (Ptr{Cvoid},), ctx_ptr)
+@inline wait_unsafe(device::SoundIODevice) = SoundIO_wait_unsafe(device.ptrs[].ctx)
+@inline wait_unsafe(ctx::SoundIOContext) = SoundIO_wait_unsafe(ctx.ptr[])
+@inline Base.wait(ctx::SoundIOContext)= isopen(ctx) && wait_unsafe(ctx)
+@inline Base.wait(device::SoundIODevice) = SoundIO_isopen_context(device.ptrs[].ctx) && wait_unsafe(device)
+# @inline Base.wait(device::SoundIODevice) = (device.ptrs[].device != C_NULL && SoundIO_isopen_context(device.ptrs[].ctx)) && wait_unsafe(device)
+function SoundIOContext(f::Function)
+    ctx = SoundIOContext()
+    try
+        connect!(ctx) # Auto-connect for convenience in do-blocks
+        f(ctx)
+    finally 
+        close(ctx) 
+    end
+end
+function enumerate_devices_unsafe_internal!(ctx::SoundIOContext, ptrs::DeviceEnumeratorPtrs)
+    device_count = ccall(ptrs.count, Cint, (Ptr{Cvoid},), ctx.ptr[])
+    default_device_offset = ccall(ptrs.default_offset, Cint, (Ptr{Cvoid},), ctx.ptr[])
+    for offset in 0:(device_count - 1)
+        device_ptr = ccall(ptrs.get_device_ptr, Ptr{Cvoid}, (Ptr{Cvoid}, Cint), ctx.ptr[], offset)
+        # if dev_ptr != C_NULL
+        # try
+        push!(ctx.devices, SoundIODevice(ctx.ptr[], device_ptr, offset == default_device_offset))
+        # finally
+        ccall(soundio_device_unref_ptr, Cvoid, (Ptr{Cvoid},), device_ptr)
+        # end
+    end
+end
+function enumerate_devices_unsafe!(ctx::SoundIOContext)
+    flush_events!(ctx)
+    empty!(ctx.devices)
+    enumerate_devices_unsafe_internal!(ctx, DEVICE_ENUMERATOR_OUTPUT_PTRS)
+    enumerate_devices_unsafe_internal!(ctx, DEVICE_ENUMERATOR_INPUT_PTRS)
+end
+function enumerate_devices!(ctx::SoundIOContext)
+    if(is_connected(ctx)) # Ensure we have a valid connection
+        enumerate_devices_unsafe!(ctx) #connect!(ctx)
+    end
+end
+list_devices(ctx::SoundIOContext) = ctx.devices
+function initialize_sound_stream(device::SoundIODevice)
+    out_ptr = ccall((:soundio_outstream_create, libsoundio), Ptr{SoundIoOutStream_C}, (Ptr{Cvoid},), device.ptrs[].device)
+    out_ptr == C_NULL && error("Failed to create outstream")
+    return out_ptr
+end
+function open_sound_stream_error_check(result::Cint)
+    result == 0 && return nothing
+    err_sym = get(SoundIoErrorMap, result, :UnknownError) # Get our clean Julia symbol
+    c_str_ptr = ccall((:soundio_strerror, libsoundio), Ptr{Cchar}, (Cint,), result) # Get the official C string for the technical "why"
+    c_msg = c_str_ptr != C_NULL ? unsafe_string(c_str_ptr) : "No message provided by libsoundio."
+    error("SoundIO [:$err_sym]: $c_msg (Code: $result)")
+end
+function open_sound_stream_unsafe!(ptr::Ptr{SoundIoOutStream_C})
+    result = ccall((:soundio_outstream_open, libsoundio), Cint, (Ptr{Cvoid},), ptr)
+    return result
+end
+function open_sound_stream(device::SoundIODevice, buffer::T, sample_rate::Integer, format::Int32, latency_seconds::Float64 = 3.0) where {T <: SoundIOSynchronizer}
+    out_ptr = initialize_sound_stream(device)
+    buffer_ref = Ref(buffer)
+    callback = make_sound_output_callback(typeof(buffer))
+    s = unsafe_load(out_ptr) # Load C-struct, update fields
+    s.format, s.sample_rate, s.userdata, s.software_latency = Cint(format), Cint(sample_rate), pointer_from_objref(buffer_ref), latency_seconds
+    s.write_callback = Base.unsafe_convert(Ptr{Cvoid}, callback)
+    # s.error_callback = ERROR_CALLBACK (if defined) (Recommended)
+    unsafe_store!(out_ptr, s) # Push back to C memory
+    # Negotiate hardware
+    result = open_sound_stream_unsafe!(out_ptr)
+    open_sound_stream_error_check(result)
+    # actual_s = unsafe_load(out_ptr) (Optional: Read back the actual achieved latency)
+    stream = SoundIOOutStream(out_ptr, s.format, s.sample_rate, buffer_ref, callback) #latency_seconds, actual_s.software_latency
+    push!(device.streams, stream) 
+    return stream
+end
+function open_sound_stream(device::SoundIODevice, buffer::T, sample_rate::Integer, format::Symbol, latency_seconds::Float64 = 1.0) where {T <: SoundIOSynchronizer}
+    if !haskey(SoundIoFormats, format)
+        error("Unknown SoundIO format: :$format. Available: $(keys(SoundIoFormats))")
+    end
+    return open_sound_stream(device, buffer, sample_rate, SoundIoFormats[format], latency_seconds)
+end
+function Base.open(device::SoundIODevice, bufferspec, channels::Integer, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0)
+    if(bufferspec isa Tuple{Ptr{T},Integer} where T)
+        buffer = FrozenAudioBuffer(bufferspec...,channels)
+    else
+        buffer = AudioCallbackSynchronizer(bufferspec,channels)
+    end
+    return open_sound_stream(device, buffer, sample_rate, format, latency_seconds)
+end
+# 4. Resume existing stream. (Streams persist over context changes)
+function reopen!(stream::SoundIOOutStream)
+    stream.ptr == C_NULL && error("Cannot reopen a null stream.")
+    result = open_sound_stream_unsafe!(stream.ptr)
+    open_sound_stream_error_check(result)
+    return nothing
+end
+function update_callback_status_message(sync::FrozenAudioBuffer,status::Int8)
+    @atomic sync.stream.status = status
+    return nothing
+end
+function update_callback_status_message(sync::AudioCallbackSynchronizer,status::Int8)
+    message::AudioCallbackMessage = @atomic sync.message
+    @atomic sync.message = AudioCallbackMessage(status,message.data_ptr,message.actual_frames)
+    return nothing
+end
+function start!(stream::SoundIOOutStream)
+    update_callback_status_message(stream.sync[],CallbackJuliaDone)
+    result = ccall((:soundio_outstream_start, libsoundio), Cint, (Ptr{Cvoid},), stream.ptr)
+    if(result != 0)
+        update_callback_status_message(stream.sync[],Int8(-2))
+    end
+end
+@inline destroy_sound_stream_unsafe(stream::SoundIOOutStream) = ccall((:soundio_outstream_destroy, libsoundio), Cvoid, (Ptr{Cvoid},), stream.ptr)
+@inline function destroy_sound_stream!(device::SoundIODevice,stream_enumeration::Int)
+    stream = device.streams[stream_enumeration]
+    destroy_sound_stream_unsafe(stream) # TODO:: Destroy async event handles too.
+    deleteat!(stream,stream_enumeration)
+end
+#check_soundio_err(ccall((:soundio_outstream_start, libsoundio), Cint, (Ptr{Cvoid},), out_ptr))
+function supported_formats(device::SoundIODevice)
+    formats = Symbol[]
+    device_ptr = device.ptrs[].device
+    device_ptr == C_NULL && return formats
+    count_ptr = convert(Ptr{Cint}, device_ptr + SOUNDIO_DEVICE_FORMAT_COUNT_OFFSET)
+    count = unsafe_load(count_ptr)
+    # 2. Read the pointer to the formats array (enum SoundIoFormat*)
+    formats_ptr_ptr = convert(Ptr{Ptr{Cint}}, device_ptr + SOUNDIO_DEVICE_FORMATS_OFFSET)
+    formats_array_ptr = unsafe_load(formats_ptr_ptr)
+    if formats_array_ptr != C_NULL
+        for i in 0:(count-1)
+            f_int = unsafe_load(formats_array_ptr, i + 1)
+            for (sym, val) in SoundIoFormats
+                val == f_int && push!(formats, sym)
+            end
+        end
+    end
+    return formats
+end
+@inline Base.wait(stream::FrozenAudioStream) = wait(stream.notify_handle)
+@inline function Base.close(stream::FrozenAudioStream)
+    @atomic stream.status = CallbackStopped
+    close(stream.notify_handle)
+end
+@inline function acquire_sound_buffer_ptr(sync::AudioCallbackSynchronizer{T, Channels}) where {T, Channels}
+    local msg::AudioCallbackMessage
+    while true
+        msg = @atomic sync.message
+        if msg.status == CallbackStatusReady
+            break # Success: The buffer is ready for Julia to write
+        end
+        if msg.status <= CallbackStopped
+            return convert(Ptr{T}, C_NULL), msg.status # Error or Stopped
+        end
+        ccall(:jl_cpu_pause, Cvoid, ())
+    end
+    return convert(Ptr{T}, msg.data_ptr), Int(msg.actual_frames)
+end
+@inline function acquire_sound_buffer(sync::AudioCallbackSynchronizer{T,channels}) where {T,channels}
+    ptr, frames_or_status = acquire_sound_buffer_ptr(sync)
+    if ptr == C_NULL
+        return frames_or_status # Returns the Int8 status code
+    end
+    #return unsafe_wrap(Matrix{T}, convert(Ptr{T}, hardware_ptr), (channels, actual_frames)) # Create the zero-allocation Matrix view
+    return unsafe_wrap(Matrix{T}, ptr, (Channels, frames_or_status))
+end
+@inline release_sound_buffer(sync::AudioCallbackSynchronizer) = update_callback_status_message(sync,CallbackJuliaDone)
+@inline halt_sound_buffer(sync::AudioCallbackSynchronizer) = update_callback_status_message(sync,CallbackStopped)
