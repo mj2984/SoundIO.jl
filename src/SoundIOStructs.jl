@@ -32,13 +32,6 @@ mutable struct FrozenAudioBuffer{T,Channels} <: SoundIOSynchronizer # The "Conta
         return new{T,Channels}(layout, stream)
     end
 end
-#=
-mutable struct AudioCallbackSynchronizer{T,Channels} <: SoundIOSynchronizer # A thread-safe "Mailbox" to communicate between C-callback and Julia Task
-    @atomic status::Int8
-    @atomic current_buffer::Matrix{T} # The "Mailbox" for the hardware pointer
-    AudioCallbackSynchronizer(T,Channels::Integer) = new{T,Channels}(CallbackStopped, Matrix{T}(undef, 0, 0))
-end
-=#
 mutable struct AudioCallbackSynchronizer{T,Channels} <: SoundIOSynchronizer
     @atomic status::Int8
     @atomic data_ptr::Ptr{Cvoid}  # Raw hardware address
