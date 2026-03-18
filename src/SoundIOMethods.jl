@@ -13,36 +13,37 @@ end
     areas_ref = Ref{Ptr{SoundIoChannelArea_C}}()
     frames_ref = Ref{Cint}(requested_frames) # Frames ref is both an input and output to soundio_outstream_begin_write_ptr. frames_max, frames_min is input from sound driver in the OS. User chooses a frame size based on this and the function checks and returns available memory (updates in place).
     ccall(soundio_outstream_begin_write_ptr, Cint, (Ptr{Cvoid}, Ptr{Ptr{SoundIoChannelArea_C}}, Ptr{Cint}), outstream_ptr, areas_ref, frames_ref)
-    return unsafe_load(areas_ref[]).ptr, frames_ref[] # Note: unsafe_load(areas_ref[]) returns a SoundIoChannelArea_C
+    return unsafe_load(areas_ref[]).ptr, Int(frames_ref[]::Cint) # Note: unsafe_load(areas_ref[]) returns a SoundIoChannelArea_C
+end
+function frozen_audio_callback_boundary_handler!(stream::FrozenAudioStream,layout::FrozenAudioLayout{T},frames_to_copy,actual_frames,bytes_per_frame) where {T}
+    silence_frames = actual_frames - frames_to_copy
+    silence_ptr = destination_ptr + (frames_to_copy * bytes_per_frame)
+    total_silence_bytes = silence_frames * bytes_per_frame
+    ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), silence_ptr, 0, total_silence_bytes)
+    if stream.current_frame >= layout.total_frames
+        if @atomic(stream.status) == CallbackJuliaDone
+            stream.current_frame = 0
+        else
+            @atomic stream.status = CallbackStopped # :inactive
+        end
+    end
 end
 function frozen_audio_callback(outstream_ptr::Ptr{SoundIoOutStream_C},frames_min::Cint,frames_max::Cint,::Type{BufType}) where {BufType<:FrozenAudioBuffer}
     buffer::BufType = get_audio_buffer(outstream_ptr,BufType)# Recover the Julia Object
     T,Channels = BufType.parameters
-    layout::FrozenAudioLayout{T}, stream::FrozenAudioStream = buffer.layout, buffer.stream
-    buffer_ptr, actual_frames = negotiate_callback_buffer_space(outstream_ptr,frames_max)
+    bytes_per_frame::Int = Channels * sizeof(T)
+    layout, stream = buffer.layout, buffer.stream
+    buffer_ptr, actual_frames::Int = negotiate_callback_buffer_space(outstream_ptr,frames_max)
     destination_ptr = Base.unsafe_convert(Ptr{UInt8},buffer_ptr) # Base.unsafe_convert(Ptr{T},unsafe_load(buffer_ref.areas[]).ptr)
-    remaining_frames = layout.total_frames - stream.current_frame
-    frames_to_copy = min(actual_frames, remaining_frames)
+    frames_to_copy::Int = min(actual_frames, layout.total_frames - stream.current_frame)
     if frames_to_copy > 0 # (stream.status == CallbackJuliaDone) && # This check has been removed since we are not looking to halt memory playback during runtime.
-        source_ptr = Base.unsafe_convert(Ptr{UInt8},layout.data_ptr) + (stream.current_frame * Channels * sizeof(T)) # layout.data_ptr + (stream.current_frame * Channels)
-        data_bytes_to_copy = frames_to_copy * Channels * sizeof(T) #data_to_copy = frames_to_copy * Channels # In Units of T
+        source_ptr = Base.unsafe_convert(Ptr{UInt8},layout.data_ptr) + (stream.current_frame * bytes_per_frame) # layout.data_ptr + (stream.current_frame * Channels)
+        data_bytes_to_copy = frames_to_copy * bytes_per_frame #data_to_copy = frames_to_copy * Channels # In Units of T
         unsafe_copyto!(destination_ptr,source_ptr,data_bytes_to_copy) #unsafe_copyto!(destination_ptr, source_ptr, data_to_copy)
         stream.current_frame += frames_to_copy
     end
     if frames_to_copy < actual_frames # Handle Silence / End-of-Buffer
-        silence_frames = actual_frames - frames_to_copy
-        silence_ptr = destination_ptr + (frames_to_copy * Channels * sizeof(T))
-        total_silence_bytes = silence_frames * Channels * sizeof(T)
-        ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), silence_ptr, 0, total_silence_bytes)
-        #silence_view = unsafe_wrap(Array, convert(Ptr{UInt8}, hardware_ptr) + silence_offset_bytes, total_silence_bytes)
-        #fill!(silence_view, zero(UInt8))
-        if stream.current_frame >= layout.total_frames
-            if(stream.status == CallbackJuliaDone)
-                stream.current_frame = 0
-            else
-                stream.status = -1 # :inactive
-            end
-        end
+        frozen_audio_callback_boundary_handler!(stream,layout,frames_to_copy,actual_frames,bytes_per_frame)
     end
     ccall(soundio_outstream_end_write_ptr, Cint, (Ptr{Cvoid},), outstream_ptr) # Commit to Hardware
     return nothing
@@ -53,7 +54,7 @@ function realtime_audio_callback(outstream_ptr::Ptr{SoundIoOutStream_C}, frames_
     if message.status == CallbackJuliaDone
         buffer_ptr, actual_frames = negotiate_callback_buffer_space(outstream_ptr, frames_max)
         if actual_frames > 0
-            @atomic sync.message = AudioCallbackMessage(CallbackStatusReady,buffer_ptr,Int32(actual_frames))
+            @atomic sync.message = AudioCallbackMessage(CallbackStatusReady,buffer_ptr,actual_frames)
             while (msg = @atomic sync.message).status == CallbackStatusReady
                 ccall(:jl_cpu_pause, Cvoid, ())
             end
@@ -209,20 +210,20 @@ function reopen!(stream::SoundIOOutStream)
     open_sound_stream_error_check(result)
     return nothing
 end
-function set_julia_start_message_status(sync::FrozenAudioBuffer,status::Int8)
-    sync.stream.status = status
+function update_callback_status_message(sync::FrozenAudioBuffer,status::Int8)
+    @atomic sync.stream.status = status
     return nothing
 end
-function set_julia_start_message_status(sync::AudioCallbackSynchronizer,status::Int8)
+function update_callback_status_message(sync::AudioCallbackSynchronizer,status::Int8)
     message::AudioCallbackMessage = @atomic sync.message
     @atomic sync.message = AudioCallbackMessage(status,message.data_ptr,message.actual_frames)
     return nothing
 end
 function start!(stream::SoundIOOutStream)
-    set_julia_start_message_status(stream.sync[],CallbackJuliaDone)
+    update_callback_status_message(stream.sync[],CallbackJuliaDone)
     result = ccall((:soundio_outstream_start, libsoundio), Cint, (Ptr{Cvoid},), stream.ptr)
     if(result != 0)
-        set_julia_start_message_status(stream.sync[],Int8(-2))
+        update_callback_status_message(stream.sync[],Int8(-2))
     end
 end
 @inline destroy_sound_stream_unsafe(stream::SoundIOOutStream) = ccall((:soundio_outstream_destroy, libsoundio), Cvoid, (Ptr{Cvoid},), stream.ptr)
@@ -260,7 +261,7 @@ function play_audio(audio_data::Matrix{T}, sample_rate::Integer, device::SoundIO
         #println("🔊 Playback started. Press Ctrl+C to stop.")
         try
             # Main Control Loop
-            while buffer_stream.status == 2
+            while buffer_stream.status == CallbackJuliaDone
                 wait_unsafe(device) # wait_events is efficient; it sleeps the thread until an event occurs
                 #yield() Small sleep to yield to Julia scheduler for REPL interactivity
             end
@@ -299,10 +300,5 @@ end
     #return unsafe_wrap(Matrix{T}, convert(Ptr{T}, hardware_ptr), (channels, actual_frames)) # Create the zero-allocation Matrix view
     return unsafe_wrap(Matrix{T}, ptr, (Channels, frames_or_status))
 end
-@inline function message_and_release_sound_buffer(sync::AudioCallbackSynchronizer, status::Int8)
-    msg = @atomic sync.message
-    @atomic sync.message = AudioCallbackMessage(status, msg.data_ptr, msg.actual_frames)
-    return nothing
-end
-@inline release_sound_buffer(sync::AudioCallbackSynchronizer) = message_and_release_sound_buffer(sync,CallbackJuliaDone)
-@inline halt_sound_buffer(sync::AudioCallbackSynchronizer) = message_and_release_sound_buffer(sync,CallbackStopped)
+@inline release_sound_buffer(sync::AudioCallbackSynchronizer) = update_callback_status_message(sync,CallbackJuliaDone)
+@inline halt_sound_buffer(sync::AudioCallbackSynchronizer) = update_callback_status_message(sync,CallbackStopped)
