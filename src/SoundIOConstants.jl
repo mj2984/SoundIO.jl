@@ -54,10 +54,10 @@ const SoundIoErrorMap = Dict{Int32, Symbol}(
     14 => :BufferUnderflow,
     15 => :EncodingError,
 )
-const CallbackStopped = Int8(0)
-const CallbackStatusReady = Int8(1)
-const CallbackJuliaDone = Int8(2)
-const CallbackInactive = Int8(-1)
+const CallbackStopped::Int8 = 0
+const CallbackStatusReady::Int8 = 1
+const CallbackJuliaDone::Int8 = 2
+const CallbackInactive::Int8 = -1
 const CallbackStatusEnumerations = Dict{Int8,Symbol}(
     CallbackStopped => :callback_stopped,
     CallbackStatusReady => :callback_ready,
