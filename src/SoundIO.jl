@@ -7,11 +7,11 @@ include("SoundIOConstants.jl")
 include("SoundIOStructs.jl")
 include("SoundIOPrettyPrintMethods.jl")
 include("SoundIOMethods.jl")
-export SoundIOContext, SoundIODevice, SoundIOOutStream, FrozenAudioBuffer,
+export SoundIOContext, SoundIODevice, SoundIOOutStream, FrozenAudioStream,
        SoundIOSynchronizer, AudioCallbackSynchronizer,
        is_connected_unsafe, is_connected,open_unsafe!, open!, connect_unsafe!, connect!,
        disconnect_unsafe!, disconnect!, flush_events_unsafe!, flush_events!, wait_unsafe,
-       enumerate_devices_unsafe!, enumerate_devices!, play_audio, supported_formats,
+       enumerate_devices_unsafe!, enumerate_devices!, supported_formats,
        start!, CallbackStopped, CallbackJuliaDone, CallbackStatusReady,
        acquire_sound_buffer_ptr, acquire_sound_buffer, release_sound_buffer, halt_sound_buffer,
        destroy_sound_stream_unsafe, destroy_sound_stream!
