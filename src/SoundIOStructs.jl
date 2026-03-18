@@ -21,6 +21,8 @@ end
 mutable struct FrozenAudioStream # The "Engine": Mutable state for the active playback
     current_frame::Int
     @atomic status::Int8 # either 2 or -1 as Julia is always done. # TODO: Make the status atomic.
+    notify_handle::Base.AsyncCondition
+    FrozenAudioStream() = new(0, CallbackStopped, Base.AsyncCondition())
 end
 abstract type SoundIOSynchronizer end
 struct FrozenAudioBuffer{T,Channels} <: SoundIOSynchronizer # The "Container": The single object we track in Julia
@@ -28,7 +30,7 @@ struct FrozenAudioBuffer{T,Channels} <: SoundIOSynchronizer # The "Container": T
     stream::FrozenAudioStream
     function FrozenAudioBuffer(ptr::Ptr{T}, frames::Integer, Channels::Integer) where {T}
         layout = FrozenAudioLayout(ptr, Int(frames))
-        stream = FrozenAudioStream(0, CallbackStopped)
+        stream = FrozenAudioStream()
         return new{T,Channels}(layout, stream)
     end
 end
