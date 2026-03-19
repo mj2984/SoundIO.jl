@@ -6,6 +6,20 @@ The goal is to preserve `libsoundio`’s philosophy—minimal abstraction, maxim
 
 ---
 
+## Why SoundIO.jl?
+
+SoundIO.jl gives you **direct, low-level access to audio streams**, which enables:
+
+- **Transparent processing:** See exactly what happens at every stage of the audio pipeline.  
+- **Fused operations:** Combine steps like signal processing and data packing efficiently, reducing overhead.  
+- **Maintained audio flow:** Preserve a clear, consistent input-to-output path without unexpected shifts or transformations.  
+- **Performance-first design:** Specialized callbacks and minimal allocations ensure C-level speed for real-time audio.  
+- **Extensible and safe:** While exposing raw pointers, SoundIO.jl wraps them safely and integrates seamlessly with Julia’s type system and tasks.  
+
+In short, it’s designed for developers who want **full visibility, precise control, and high performance** over their audio pipelines.
+
+---
+
 ## 🚀 Key Features
 
 ### Zero-Allocation Callbacks
