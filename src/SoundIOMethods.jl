@@ -15,29 +15,29 @@ end
     ccall(soundio_outstream_begin_write_ptr, Cint, (Ptr{Cvoid}, Ptr{Ptr{SoundIoChannelArea_C}}, Ptr{Cint}), outstream_ptr, areas_ref, frames_ref)
     return unsafe_load(areas_ref[]).ptr, Int(frames_ref[]::Cint) # Note: unsafe_load(areas_ref[]) returns a SoundIoChannelArea_C
 end
-function get_source_ptr_base(buffer::FrozenAudioBuffer{T,Channels,total_atoms}) where {T,Channels,total_atoms}
-    if(total_atoms == 1)
-        return Ptr{UInt8}(buffer.layout.data_ptr)
-    else
+function get_source_ptr_base(buffer::FrozenAudioBuffer{T,Channels,isatomic}) where {T,Channels,isatomic}
+    if(isatomic)
         return Ptr{UInt8}(buffer.layout.data_ptr) + buffer.stream.current_offset_base
+    else
+        return Ptr{UInt8}(buffer.layout.data_ptr)
     end
 end
-get_frames_to_copy(buffer::FrozenAudioBuffer{T,Channels,total_atoms},actual_frames::Int) where {T,Channels,total_atoms} = min(actual_frames, buffer.layout.atom_frames - buffer.stream.atomic_frame_offset)
-function frozen_audio_callback_boundary_handler!(buffer::FrozenAudioBuffer{T,Channels,total_atoms}, destination_ptr::Ptr{UInt8}, frames_copied::Int, actual_frames::Int, bytes_per_frame::Int) where {T,Channels,total_atoms}
+get_frames_to_copy(buffer::FrozenAudioBuffer{T,Channels,isatomic},actual_frames::Int) where {T,Channels,isatomic} = min(actual_frames, buffer.layout.atom_frames - buffer.stream.atomic_frame_offset)
+function frozen_audio_callback_boundary_handler!(buffer::FrozenAudioBuffer{T,Channels,isatomic}, destination_ptr::Ptr{UInt8}, frames_copied::Int, actual_frames::Int, bytes_per_frame::Int) where {T,Channels,isatomic}
     layout,stream = buffer.layout, buffer.stream
     status::Int8 = @atomic stream.status
     pending_frames = actual_frames - frames_copied
     starting_ptr = destination_ptr + (frames_copied * bytes_per_frame)
     pending_bytes = pending_frames * bytes_per_frame
     if status == CallbackJuliaDone
-        if(total_atoms == 1)
-            @atomic stream.elapsed_frames = pending_frames
-        else
+        if(isatomic)
             atom_bytes = layout.atom_frames * bytes_per_frame # assert pending_bytes < atom_bytes (but this should be done outside)
-            total_bytes = total_atoms * atom_bytes
+            total_bytes = layout.total_atoms * atom_bytes
             next_offset_base = (stream.current_offset_base + atom_bytes) % total_bytes
             stream.current_offset_base = next_offset_base
             @atomic stream.elapsed_frames = div(next_offset_base, bytes_per_frame) + pending_frames
+        else
+            @atomic stream.elapsed_frames = pending_frames
         end
         stream.atomic_frame_offset = pending_frames
         next_atom_ptr = get_source_ptr_base(buffer)
@@ -303,4 +303,4 @@ end
     return unsafe_wrap(Matrix{T}, ptr, (Channels, frames_or_status))
 end
 @inline release_sound_buffer(sync::AudioCallbackSynchronizer) = update_callback_status_message(sync,CallbackJuliaDone)
-@inline halt_sound_buffer(sync::AudioCallbackSynchronizer) = update_callback_status_message(sync,CallbackStopped)S
+@inline halt_sound_buffer(sync::AudioCallbackSynchronizer) = update_callback_status_message(sync,CallbackStopped)
