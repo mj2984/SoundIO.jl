@@ -7,33 +7,35 @@ using PtrArrays
 function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T, Channels}, audio_data::Matrix{T}) where {T, Channels}
     total_frames::Int = size(audio_data, 2)
     current_frame::Int = 0
-    while current_frame < total_frames
-        res::Union{Symbol,Matrix{T}} = acquire_sound_buffer(sync)
-        if res isa Symbol
-            break
-        end
-        curr_buf::Matrix{T} = res
-        buf_frames::Int = size(curr_buf, 2)
-        rem_frames::Int = total_frames - current_frame
-        to_copy::Int = min(buf_frames, rem_frames)
-        @views copyto!(curr_buf[:, 1:to_copy], audio_data[:, current_frame+1:current_frame+to_copy])
-        if to_copy < buf_frames
-            @views fill!(curr_buf[:, to_copy+1:end], zero(T))
-        end
-        #=
-        dst_ptr, buf_frames = acquire_sound_buffer_ptr(sync)
-        dst_ptr == C_NULL && break
-        to_copy = min(buf_frames, total_frames - current_frame)
-        src_ptr = pointer(audio_data, (current_frame * Channels) + 1)
-        unsafe_copyto!(dst_ptr, src_ptr, to_copy * Channels)
-        if to_copy < buf_frames
-            silence_ptr = dst_ptr + (to_copy * Channels * sizeof(T))
-            ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), silence_ptr, 0, (buf_frames - to_copy) * Channels * sizeof(T))
-        end
-        =#
-        current_frame += to_copy
-        if(current_frame < total_frames)
-            release_sound_buffer(sync)
+    GC.@preserve audio_data begin
+        while current_frame < total_frames
+            res::Union{Symbol,Matrix{T}} = acquire_sound_buffer(sync)
+            if res isa Symbol
+                break
+            end
+            curr_buf::Matrix{T} = res
+            buf_frames::Int = size(curr_buf, 2)
+            rem_frames::Int = total_frames - current_frame
+            to_copy::Int = min(buf_frames, rem_frames)
+            @views copyto!(curr_buf[:, 1:to_copy], audio_data[:, current_frame+1:current_frame+to_copy])
+            if to_copy < buf_frames
+                @views fill!(curr_buf[:, to_copy+1:end], zero(T))
+            end
+            #=
+            dst_ptr, buf_frames = acquire_sound_buffer_ptr(sync)
+            dst_ptr == C_NULL && break
+            to_copy = min(buf_frames, total_frames - current_frame)
+            src_ptr = pointer(audio_data, (current_frame * Channels) + 1)
+            unsafe_copyto!(dst_ptr, src_ptr, to_copy * Channels)
+            if to_copy < buf_frames
+                silence_ptr = dst_ptr + (to_copy * Channels * sizeof(T))
+                ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), silence_ptr, 0, (buf_frames - to_copy) * Channels * sizeof(T))
+            end
+            =#
+            current_frame += to_copy
+            if(current_frame < total_frames)
+                release_sound_buffer(sync)
+            end
         end
     end
     halt_sound_buffer(sync)
@@ -47,13 +49,11 @@ function play_audio_threaded(audio_data::Matrix{T}, sample_rate::Integer, device
     ccall(:jl_set_task_tid, Cvoid, (Any, Int16), worker_task, 5) 
     worker_task.sticky = true
     schedule(worker_task)
-    GC.@preserve audio_data begin
-        start!(stream)
-        while (s = @atomic sync.message).status > 0
-            wait(sync) #wait_unsafe(device) #yield()
-        end
-        destroy_sound_stream_unsafe(stream)
+    start!(stream)
+    while (s = @atomic sync.message).status > 0
+        wait(sync) #wait_unsafe(device) #yield()
     end
+    destroy_sound_stream_unsafe(stream)
     wait(worker_task)
     println("Playback finished.")
 end
@@ -77,12 +77,14 @@ end
 function play_audio(audio_data::Matrix{T}, sample_rate::Integer, device::SoundIODevice, format::fmtType) where {fmtType <: Union{Symbol,Int32}, T<:Number}
     channels, frames = size(audio_data)
     GC.@preserve audio_data begin # Preserve audio data from GC during the C thread's run
-        stream = open(device, (pointer(audio_data), frames, 1), channels, sample_rate, format)
+        stream = open(device, (pointer(audio_data), frames, 1, false), channels, sample_rate, format)
         buffer_stream = stream.sync[].stream::FrozenAudioStream
         start!(stream) #println("🔊 Playback started. Press Ctrl+C to stop.")
         try
-            while @atomic(buffer_stream.status) == CallbackJuliaDone # Main Control Loop
-                wait(buffer_stream) #wait_unsafe(device) # wait_events is efficient; it sleeps the thread until an event occurs
+            exchange::FrozenAudioExchange = @atomic buffer_stream.exchange
+            while exchange.status == CallbackJuliaDone
+                wait(buffer_stream)
+                exchange = @atomic buffer_stream.exchange
             end
         finally
             close(buffer_stream)
