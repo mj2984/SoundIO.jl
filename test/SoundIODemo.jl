@@ -6,16 +6,10 @@ using PtrArrays
 # Example of pure julia pipeline to interface with SoundIO buffers.
 function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T, Channels}, audio_data::Matrix{T}) where {T, Channels}
     total_frames::Int = size(audio_data, 2)
-    #=
-    current_frame::Int = 0
-    streaming_state::Symbol = :completed
-    =#
     current_frame::Int = 0
     while current_frame < total_frames
-        #=
         res::Union{Symbol,Matrix{T}} = acquire_sound_buffer(sync)
         if res isa Symbol
-            streaming_state = res
             break
         end
         curr_buf::Matrix{T} = res
@@ -26,7 +20,7 @@ function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T, Channels
         if to_copy < buf_frames
             @views fill!(curr_buf[:, to_copy+1:end], zero(T))
         end
-        =#
+        #=
         dst_ptr, buf_frames = acquire_sound_buffer_ptr(sync)
         dst_ptr == C_NULL && break
         to_copy = min(buf_frames, total_frames - current_frame)
@@ -36,18 +30,13 @@ function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T, Channels
             silence_ptr = dst_ptr + (to_copy * Channels * sizeof(T))
             ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), silence_ptr, 0, (buf_frames - to_copy) * Channels * sizeof(T))
         end
+        =#
         current_frame += to_copy
         if(current_frame < total_frames)
             release_sound_buffer(sync)
         end
     end
     halt_sound_buffer(sync)
-    #=
-    if(streaming_state == :completed)
-        halt_sound_buffer(sync)
-    end
-    return streaming_state
-    =#
 end
 # Uses the audio_streamer_ram_playback to manage streaming.
 function play_audio_threaded(audio_data::Matrix{T}, sample_rate::Integer, device::SoundIODevice, format::fmtType) where {fmtType <: Union{Symbol,Int32},T}
@@ -61,8 +50,7 @@ function play_audio_threaded(audio_data::Matrix{T}, sample_rate::Integer, device
     GC.@preserve audio_data begin
         start!(stream)
         while (s = @atomic sync.message).status > 0
-            wait_unsafe(device)
-            #yield()
+            wait(sync) #wait_unsafe(device) #yield()
         end
         destroy_sound_stream_unsafe(stream)
     end
@@ -95,7 +83,6 @@ function play_audio(audio_data::Matrix{T}, sample_rate::Integer, device::SoundIO
         try
             while @atomic(buffer_stream.status) == CallbackJuliaDone # Main Control Loop
                 wait(buffer_stream) #wait_unsafe(device) # wait_events is efficient; it sleeps the thread until an event occurs
-                #yield() Small sleep to yield to Julia scheduler for REPL interactivity
             end
         finally
             close(buffer_stream)
@@ -104,17 +91,10 @@ function play_audio(audio_data::Matrix{T}, sample_rate::Integer, device::SoundIO
         end
     end
 end
-function play_music(path)
+function play_music(sound_file::String,audio_device::SoundIODevice)
     audio_data,sample_rate,destination_format::Symbol = process_audio(sound_file)
-    SoundIOContext() do ctx
-        enumerate_devices!(ctx)
-        audio_device = filter(d -> (!d.is_input) & (d.is_raw), ctx.devices)[1]
-        println("🎶 Playing: $path")
-        println("Keys: [p]ause/resume, [s]eek forward 10s, [v]olume down, [q]uit")
-        play_audio(audio_data,Int(sample_rate),audio_device,destination_format)
-        #play_audio_threaded(audio_data,Int32(sample_rate),audio_device,destination_format)
-        println("Finished!")
-    end
+    play_audio(audio_data,Int(sample_rate),audio_device,destination_format)
+    #play_audio_threaded(audio_data,Int32(sample_rate),audio_device,destination_format)
 end
 #1. The Watcher (Runs in the background)
 #=
