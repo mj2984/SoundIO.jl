@@ -14,10 +14,11 @@ mutable struct SoundIORingBuffer
 end
 =#
 # --- Playback Logic ---
-struct FrozenAudioLayout{T,total_atoms} # The "Map": Immutable description of the static memory
+struct FrozenAudioLayout{T,isatomic} # The "Map": Immutable description of the static memory
     data_ptr::Ptr{T}
     atom_frames::Int
-    FrozenAudioLayout(data_ptr::Ptr{T},atom_frames::Int,total_atoms::Int) where {T} = new{T,total_atoms}(data_ptr,atom_frames)
+    total_atoms::Int
+    FrozenAudioLayout(data_ptr::Ptr{T},atom_frames::Int,total_atoms::Int) where {T} = new{T,total_atoms!=1}(data_ptr,atom_frames,total_atoms)
 end
 mutable struct FrozenAudioStream # The "Engine": Mutable state for the active playback
     atomic_frame_offset::Int
@@ -28,13 +29,13 @@ mutable struct FrozenAudioStream # The "Engine": Mutable state for the active pl
     FrozenAudioStream() = new(0, 0, 0, CallbackStopped, Base.AsyncCondition())
 end
 abstract type SoundIOSynchronizer end
-struct FrozenAudioBuffer{T,Channels,total_atoms} <: SoundIOSynchronizer # The "Container": The single object we track in Julia
-    layout::FrozenAudioLayout{T}
+struct FrozenAudioBuffer{T,Channels,isatomic} <: SoundIOSynchronizer # The "Container": The single object we track in Julia
+    layout::FrozenAudioLayout{T,isatomic}
     stream::FrozenAudioStream
     function FrozenAudioBuffer(ptr::Ptr{T}, atom_frames::Integer, total_atoms::Integer, Channels::Integer) where {T}
         layout = FrozenAudioLayout(ptr, Int(atom_frames),Int(total_atoms))
         stream = FrozenAudioStream()
-        return new{T,Channels,total_atoms}(layout, stream)
+        return new{T,Channels,total_atoms!=1}(layout, stream)
     end
 end
 struct AudioCallbackMessage
