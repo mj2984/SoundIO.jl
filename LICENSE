@@ -1,6 +1,14 @@
-MIT License
+# SoundIO.jl License
 
-Copyright (c) 2026 mj2984
+This repository, SoundIO.jl, is licensed under the MIT License. 
+It provides Julia bindings to libsoundio and may include or link to libsoundio, 
+which is also MIT licensed (see below).
+
+---
+
+MIT License for SoundIO.jl
+
+Copyright (c) 2026 Manuel Jenkin Jerome <mj2984@columbia.edu>
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -20,7 +28,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-This package includes or links to libsoundio, which is licensed under the MIT License: The MIT License (Expat)
+---
+
+The MIT License (Expat) for libsoundio
 
 Copyright (c) 2015 Andrew Kelley
 
