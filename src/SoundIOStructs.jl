@@ -14,28 +14,32 @@ mutable struct SoundIORingBuffer
 end
 =#
 # --- Playback Logic ---
-struct FrozenAudioLayout{T,isatomic} # The "Map": Immutable description of the static memory
+struct FrozenAudioLayout{T,isatomic,isclearing} # The "Map": Immutable description of the static memory
     data_ptr::Ptr{T}
     atom_frames::Int
     total_atoms::Int
-    FrozenAudioLayout(data_ptr::Ptr{T},atom_frames::Int,total_atoms::Int) where {T} = new{T,total_atoms!=1}(data_ptr,atom_frames,total_atoms)
+    FrozenAudioLayout(data_ptr::Ptr{T},atom_frames::Int,total_atoms::Int,isclearing::Bool) where {T} = new{T,total_atoms!=1,isclearing}(data_ptr,atom_frames,total_atoms)
+end
+struct FrozenAudioExchange
+    elapsed_frame_bytes::Int
+    elapsed_atoms::Int
+    status::Int8
 end
 mutable struct FrozenAudioStream # The "Engine": Mutable state for the active playback
     atomic_frame_offset::Int
     current_offset_base::Int
-    @atomic elapsed_frames::Int # A synchronized view that only provides updates atomically at atom boundary crossing.
-    @atomic status::Int8 # either 2 or -1 as Julia is always done. # TODO: Make the status atomic.
+    @atomic exchange::FrozenAudioExchange # A synchronized view that only provides updates atomically at atom boundary crossing.
     notify_handle::Base.AsyncCondition
-    FrozenAudioStream() = new(0, 0, 0, CallbackStopped, Base.AsyncCondition())
+    FrozenAudioStream() = new(0, 0, FrozenAudioExchange(0, 0, CallbackStopped), Base.AsyncCondition())
 end
 abstract type SoundIOSynchronizer end
-struct FrozenAudioBuffer{T,Channels,isatomic} <: SoundIOSynchronizer # The "Container": The single object we track in Julia
-    layout::FrozenAudioLayout{T,isatomic}
+struct FrozenAudioBuffer{T,Channels,isatomic,isclearing} <: SoundIOSynchronizer # The "Container": The single object we track in Julia
+    layout::FrozenAudioLayout{T,isatomic,isclearing}
     stream::FrozenAudioStream
-    function FrozenAudioBuffer(ptr::Ptr{T}, atom_frames::Integer, total_atoms::Integer, Channels::Integer) where {T}
-        layout = FrozenAudioLayout(ptr, Int(atom_frames),Int(total_atoms))
+    function FrozenAudioBuffer(ptr::Ptr{T}, atom_frames::Integer, total_atoms::Integer, isclearing::Bool, Channels::Integer) where {T}
+        layout = FrozenAudioLayout(ptr, Int(atom_frames),Int(total_atoms),isclearing)
         stream = FrozenAudioStream()
-        return new{T,Channels,total_atoms!=1}(layout, stream)
+        return new{T,Channels,total_atoms!=1,isclearing}(layout, stream)
     end
 end
 struct AudioCallbackMessage
