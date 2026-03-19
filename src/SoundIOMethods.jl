@@ -231,11 +231,12 @@ function reopen!(stream::SoundIOOutStream)
     open_sound_stream_error_check(result)
     return nothing
 end
-function update_callback_status_message(sync::FrozenAudioBuffer,status::Int8)
-    exchange = @atomic sync.stream.exchange
-    @atomic sync.stream.exchange = FrozenAudioExchange(exchange.elapsed_frame_bytes,exchange.elapsed_atoms,status)
+function update_callback_status_message(stream::FrozenAudioStream,status::Int8)
+    exchange = @atomic stream.exchange
+    @atomic stream.exchange = FrozenAudioExchange(exchange.elapsed_frame_bytes,exchange.elapsed_atoms,status)
     return nothing
 end
+update_callback_status_message(sync::FrozenAudioBuffer,status::Int8) = update_callback_status_message(sync.stream,status)
 function update_callback_status_message(sync::AudioCallbackSynchronizer,status::Int8)
     message::AudioCallbackMessage = @atomic sync.message
     @atomic sync.message = AudioCallbackMessage(status,message.data_ptr,message.actual_frames)
@@ -278,8 +279,7 @@ end
 @inline Base.wait(sync::AudioCallbackSynchronizer) = wait(sync.notify_handle)
 @inline get_exchange(stream::FrozenAudioStream) = @atomic stream.exchange
 @inline function Base.close(stream::FrozenAudioStream)
-    exchange = @atomic stream.exchange
-    @atomic stream.exchange = FrozenAudioExchange(exchange.elapsed_frame_bytes,exchange.elapsed_atoms,CallbackStopped)
+    update_callback_status_message(stream,CallbackStopped)
     close(stream.notify_handle)
 end
 @inline function acquire_sound_buffer_ptr(sync::AudioCallbackSynchronizer{T, Channels}) where {T, Channels}
