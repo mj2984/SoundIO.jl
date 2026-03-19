@@ -217,7 +217,7 @@ function open_sound_stream(device::SoundIODevice, buffer::T, sample_rate::Intege
     return open_sound_stream(device, buffer, sample_rate, SoundIoFormats[format], latency_seconds)
 end
 function Base.open(device::SoundIODevice, bufferspec, channels::Integer, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0)
-    if bufferspec isa Tuple{Ptr, Integer, Integer, Bool}
+    if bufferspec isa Tuple{Ptr, Tuple{Integer, Integer}, Bool}
         buffer = FrozenAudioBuffer(bufferspec...,channels)
     else
         buffer = AudioCallbackSynchronizer(bufferspec,channels)
