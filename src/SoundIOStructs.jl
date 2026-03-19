@@ -18,7 +18,7 @@ struct FrozenAudioLayout{T,isatomic,isclearing} # The "Map": Immutable descripti
     data_ptr::Ptr{T}
     atom_frames::Int
     total_atoms::Int
-    FrozenAudioLayout(data_ptr::Ptr{T},atom_frames::Int,total_atoms::Int,isclearing::Bool) where {T} = new{T,total_atoms!=1,isclearing}(data_ptr,atom_frames,total_atoms)
+    FrozenAudioLayout(data_ptr::Ptr{T},atom_dimensions::NTuple{2,Int},isclearing::Bool) where {T} = new{T,atom_dimensions[2]!=1,isclearing}(data_ptr,atom_dimensions...)
 end
 struct FrozenAudioExchange
     elapsed_frame_bytes::Int
@@ -36,10 +36,10 @@ abstract type SoundIOSynchronizer end
 struct FrozenAudioBuffer{T,Channels,isatomic,isclearing} <: SoundIOSynchronizer # The "Container": The single object we track in Julia
     layout::FrozenAudioLayout{T,isatomic,isclearing}
     stream::FrozenAudioStream
-    function FrozenAudioBuffer(ptr::Ptr{T}, atom_frames::Integer, total_atoms::Integer, isclearing::Bool, Channels::Integer) where {T}
-        layout = FrozenAudioLayout(ptr, Int(atom_frames),Int(total_atoms),isclearing)
+    function FrozenAudioBuffer(ptr::Ptr{T}, atom_dimensions::Tuple{Integer,Integer}, isclearing::Bool, Channels::Integer) where {T}
+        layout = FrozenAudioLayout(ptr, map(Int,atom_dimensions), isclearing)
         stream = FrozenAudioStream()
-        return new{T,Channels,total_atoms!=1,isclearing}(layout, stream)
+        return new{T,Channels,atom_dimensions[2]!=1,isclearing}(layout, stream)
     end
 end
 struct AudioCallbackMessage
