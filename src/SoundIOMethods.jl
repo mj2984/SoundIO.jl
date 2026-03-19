@@ -15,15 +15,33 @@ end
     ccall(soundio_outstream_begin_write_ptr, Cint, (Ptr{Cvoid}, Ptr{Ptr{SoundIoChannelArea_C}}, Ptr{Cint}), outstream_ptr, areas_ref, frames_ref)
     return unsafe_load(areas_ref[]).ptr, Int(frames_ref[]::Cint) # Note: unsafe_load(areas_ref[]) returns a SoundIoChannelArea_C
 end
-function frozen_audio_callback_boundary_handler!(stream::FrozenAudioStream,source_ptr_base::Ptr{UInt8},destination_ptr::Ptr{UInt8},frames_to_copy::Int,actual_frames::Int,bytes_per_frame::Int)
+function get_source_ptr_base(buffer::FrozenAudioBuffer{T,Channels,total_atoms}) where {T,Channels,total_atoms}
+    if(total_atoms == 1)
+        return Ptr{UInt8}(buffer.layout.data_ptr)
+    else
+        return Ptr{UInt8}(buffer.layout.data_ptr) + buffer.stream.current_offset_base
+    end
+end
+get_frames_to_copy(buffer::FrozenAudioBuffer{T,Channels,total_atoms},actual_frames::Int) where {T,Channels,total_atoms} = min(actual_frames, buffer.layout.atom_frames - buffer.stream.atomic_frame_offset)
+function frozen_audio_callback_boundary_handler!(buffer::FrozenAudioBuffer{T,Channels,total_atoms}, destination_ptr::Ptr{UInt8}, frames_copied::Int, actual_frames::Int, bytes_per_frame::Int) where {T,Channels,total_atoms}
+    layout,stream = buffer.layout, buffer.stream
     status::Int8 = @atomic stream.status
-    pending_frames = actual_frames - frames_to_copy # The layout should be large enough that required data at any point is smaller than its full size.
-    starting_ptr = destination_ptr + (frames_to_copy * bytes_per_frame)
+    pending_frames = actual_frames - frames_copied
+    starting_ptr = destination_ptr + (frames_copied * bytes_per_frame)
     pending_bytes = pending_frames * bytes_per_frame
-    if(status == CallbackJuliaDone)
-        source_ptr = source_ptr_base
-        unsafe_copyto!(starting_ptr,source_ptr,pending_bytes)
-        stream.current_frame = pending_frames
+    if status == CallbackJuliaDone
+        if(total_atoms == 1)
+            @atomic stream.elapsed_frames = pending_frames
+        else
+            atom_bytes = layout.atom_frames * bytes_per_frame # assert pending_bytes < atom_bytes (but this should be done outside)
+            total_bytes = total_atoms * atom_bytes
+            next_offset_base = (stream.current_offset_base + atom_bytes) % total_bytes
+            stream.current_offset_base = next_offset_base
+            @atomic stream.elapsed_frames = div(next_offset_base, bytes_per_frame) + pending_frames
+        end
+        stream.atomic_frame_offset = pending_frames
+        next_atom_ptr = get_source_ptr_base(buffer)
+        unsafe_copyto!(starting_ptr, next_atom_ptr, pending_bytes)
     else
         ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), starting_ptr, 0, pending_bytes)
         @atomic stream.status = CallbackStopped
@@ -34,19 +52,18 @@ function frozen_audio_callback(outstream_ptr::Ptr{SoundIoOutStream_C},frames_min
     buffer::BufType = get_audio_buffer(outstream_ptr,BufType)# Recover the Julia Object
     T,Channels = BufType.parameters
     bytes_per_frame::Int = Channels * sizeof(T)
-    layout, stream = buffer.layout, buffer.stream
     buffer_ptr, actual_frames::Int = negotiate_callback_buffer_space(outstream_ptr,frames_max)
-    source_ptr_base = Base.unsafe_convert(Ptr{UInt8},layout.data_ptr)
+    source_ptr_base = get_source_ptr_base(buffer)
     destination_ptr = Base.unsafe_convert(Ptr{UInt8},buffer_ptr) # Base.unsafe_convert(Ptr{T},unsafe_load(buffer_ref.areas[]).ptr)
-    frames_to_copy::Int = min(actual_frames, layout.total_frames - stream.current_frame)
+    frames_to_copy::Int = get_frames_to_copy(buffer,actual_frames)
     if frames_to_copy > 0 # (stream.status == CallbackJuliaDone) && # This check has been removed since we are not looking to halt memory playback during runtime.
-        source_ptr = source_ptr_base + (stream.current_frame * bytes_per_frame) # layout.data_ptr + (stream.current_frame * Channels)
+        source_ptr = source_ptr_base + (buffer.stream.atomic_frame_offset * bytes_per_frame) # layout.data_ptr + (stream.current_frame * Channels)
         data_bytes_to_copy = frames_to_copy * bytes_per_frame #data_to_copy = frames_to_copy * Channels # In Units of T
         unsafe_copyto!(destination_ptr,source_ptr,data_bytes_to_copy) #unsafe_copyto!(destination_ptr, source_ptr, data_to_copy)
-        stream.current_frame += frames_to_copy
+        buffer.stream.atomic_frame_offset += frames_to_copy
     end
     if frames_to_copy < actual_frames # Handle Silence / End-of-Buffer
-        frozen_audio_callback_boundary_handler!(stream,source_ptr_base,destination_ptr,frames_to_copy,actual_frames,bytes_per_frame)
+        frozen_audio_callback_boundary_handler!(buffer,destination_ptr,frames_to_copy,actual_frames,bytes_per_frame)
     end
     ccall(soundio_outstream_end_write_ptr, Cint, (Ptr{Cvoid},), outstream_ptr) # Commit to Hardware
     return nothing
@@ -201,7 +218,7 @@ function open_sound_stream(device::SoundIODevice, buffer::T, sample_rate::Intege
     return open_sound_stream(device, buffer, sample_rate, SoundIoFormats[format], latency_seconds)
 end
 function Base.open(device::SoundIODevice, bufferspec, channels::Integer, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0)
-    if(bufferspec isa Tuple{Ptr{T},Integer} where T)
+    if(bufferspec isa Tuple{Ptr{T},Integer,Integer} where T)
         buffer = FrozenAudioBuffer(bufferspec...,channels)
     else
         buffer = AudioCallbackSynchronizer(bufferspec,channels)
@@ -286,4 +303,4 @@ end
     return unsafe_wrap(Matrix{T}, ptr, (Channels, frames_or_status))
 end
 @inline release_sound_buffer(sync::AudioCallbackSynchronizer) = update_callback_status_message(sync,CallbackJuliaDone)
-@inline halt_sound_buffer(sync::AudioCallbackSynchronizer) = update_callback_status_message(sync,CallbackStopped)
+@inline halt_sound_buffer(sync::AudioCallbackSynchronizer) = update_callback_status_message(sync,CallbackStopped)S
