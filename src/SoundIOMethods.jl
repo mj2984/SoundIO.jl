@@ -62,6 +62,8 @@ function realtime_audio_callback(outstream_ptr::Ptr{SoundIoOutStream_C}, frames_
                 ccall(:jl_cpu_pause, Cvoid, ())
             end
         end
+    else
+        ccall(:uv_async_send, Cint, (Ptr{Cvoid},), sync.notify_handle.handle)
     end
     ccall(soundio_outstream_end_write_ptr, Cint, (Ptr{Cvoid},), outstream_ptr)
     return nothing
@@ -256,6 +258,7 @@ function supported_formats(device::SoundIODevice)
     return formats
 end
 @inline Base.wait(stream::FrozenAudioStream) = wait(stream.notify_handle)
+@inline Base.wait(sync::AudioCallbackSynchronizer) = wait(sync.notify_handle)
 @inline function Base.close(stream::FrozenAudioStream)
     @atomic stream.status = CallbackStopped
     close(stream.notify_handle)
@@ -274,7 +277,7 @@ end
     end
     return convert(Ptr{T}, msg.data_ptr), Int(msg.actual_frames)
 end
-@inline function acquire_sound_buffer(sync::AudioCallbackSynchronizer{T,channels}) where {T,channels}
+@inline function acquire_sound_buffer(sync::AudioCallbackSynchronizer{T,Channels}) where {T,Channels}
     ptr, frames_or_status = acquire_sound_buffer_ptr(sync)
     if ptr == C_NULL
         return frames_or_status # Returns the Int8 status code
