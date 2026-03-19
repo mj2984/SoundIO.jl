@@ -77,7 +77,7 @@ end
 function play_audio(audio_data::Matrix{T}, sample_rate::Integer, device::SoundIODevice, format::fmtType) where {fmtType <: Union{Symbol,Int32}, T<:Number}
     channels, frames = size(audio_data)
     GC.@preserve audio_data begin # Preserve audio data from GC during the C thread's run
-        stream = open(device, (pointer(audio_data), frames), channels, sample_rate, format)
+        stream = open(device, (pointer(audio_data), frames, 1), channels, sample_rate, format)
         buffer_stream = stream.sync[].stream::FrozenAudioStream
         start!(stream) #println("🔊 Playback started. Press Ctrl+C to stop.")
         try
