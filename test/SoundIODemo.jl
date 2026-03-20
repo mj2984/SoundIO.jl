@@ -42,7 +42,7 @@ function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T, Channels
 end
 # Uses the audio_streamer_ram_playback to manage streaming.
 function play_audio_threaded(audio_data::Matrix{T}, sample_rate::Integer, device::SoundIODevice, format::fmtType) where {fmtType <: Union{Symbol,Int32},T}
-    stream = open(device, T, size(audio_data, 1), sample_rate, format)
+    stream = SoundIO.open_sound_stream(device, (T, size(audio_data, 1)), nothing, sample_rate, format)
     sync = stream.sync[]
     # worker_task = Threads.@spawn run_audio_worker!(sync, audio_data)
     worker_task = @task audio_streamer_ram_playback(sync, audio_data)
@@ -75,22 +75,19 @@ end
     return audio_data, sample_rate, destination_format
 end
 function play_audio(audio_data::Matrix{T}, sample_rate::Integer, device::SoundIODevice, format::fmtType) where {fmtType <: Union{Symbol,Int32}, T<:Number}
-    channels, frames = size(audio_data)
-    GC.@preserve audio_data begin # Preserve audio data from GC during the C thread's run
-        stream = open(device, (pointer(audio_data), (frames, 1), false), channels, sample_rate, format)
-        buffer_stream = stream.sync[].stream::FrozenAudioStream
-        start!(stream) #println("🔊 Playback started. Press Ctrl+C to stop.")
-        try
-            exchange::FrozenAudioExchange = @atomic buffer_stream.exchange
-            while exchange.status == CallbackJuliaDone
-                wait(buffer_stream)
-                exchange = @atomic buffer_stream.exchange
-            end
-        finally
-            close(buffer_stream)
-            destroy_sound_stream_unsafe(stream) # Stop stream playback when done or interrupted
-            #filter!(s -> s != stream_ptr, ctx.streams)
+    stream = open(device, (audio_data, false), sample_rate, format) # The stream captures the audio data from being Garbage collected.
+    buffer_stream = stream.sync[].stream::FrozenAudioStream
+    start!(stream) #println("🔊 Playback started. Press Ctrl+C to stop.")
+    try
+        exchange::FrozenAudioExchange = @atomic buffer_stream.exchange
+        while exchange.status == CallbackJuliaDone
+            wait(buffer_stream)
+            exchange = @atomic buffer_stream.exchange
         end
+    finally
+        close(buffer_stream)
+        destroy_sound_stream_unsafe(stream) # Stop stream playback when done or interrupted
+        #filter!(s -> s != stream_ptr, ctx.streams)
     end
 end
 function play_music(sound_file::String,audio_device::SoundIODevice)
