@@ -84,12 +84,8 @@ function realtime_audio_callback(outstream_ptr::Ptr{SoundIoOutStream_C}, frames_
     ccall(soundio_outstream_end_write_ptr, Cint, (Ptr{Cvoid},), outstream_ptr)
     return nothing
 end
-function make_sound_output_callback(::Type{BufType}) where {BufType<:FrozenAudioBuffer}
-    callback = (outstream_ptr, frames_min, frames_max) -> frozen_audio_callback(outstream_ptr, frames_min, frames_max, BufType) # Define the specific closure
-    return @cfunction($callback, Cvoid, (Ptr{SoundIoOutStream_C}, Cint, Cint)) # Use $ to interpolate the closure into the macro
-end
-function make_sound_output_callback(::Type{BufType}) where {BufType<:AudioCallbackSynchronizer}
-    callback = (outstream_ptr, frames_min, frames_max) -> realtime_audio_callback(outstream_ptr, frames_min, frames_max, BufType)
+function make_sound_output_callback(::Type{BufType}, callback_function::F) where {BufType<:SoundIOSynchronizer, F<:Function}
+    callback = (out_ptr, f_min, f_max) -> callback_function(out_ptr, f_min, f_max, BufType)
     return @cfunction($callback, Cvoid, (Ptr{SoundIoOutStream_C}, Cint, Cint))
 end
 # Lifecycle & Check
@@ -193,10 +189,9 @@ function open_sound_stream_unsafe!(ptr::Ptr{SoundIoOutStream_C})
     result = ccall((:soundio_outstream_open, libsoundio), Cint, (Ptr{Cvoid},), ptr)
     return result
 end
-function open_sound_stream(device::SoundIODevice, buffer::T, sample_rate::Integer, format::Int32, latency_seconds::Float64 = 3.0) where {T <: SoundIOSynchronizer}
+function open_sound_stream(device::SoundIODevice, buffer::T, callback::Base.CFunction, preserve::Any, sample_rate::Integer, format::Int32, latency_seconds::Float64 = 3.0) where {T <: SoundIOSynchronizer}
     out_ptr = initialize_sound_stream(device)
     buffer_ref = Ref(buffer)
-    callback = make_sound_output_callback(typeof(buffer))
     s = unsafe_load(out_ptr) # Load C-struct, update fields
     s.format, s.sample_rate, s.userdata, s.software_latency = Cint(format), Cint(sample_rate), pointer_from_objref(buffer_ref), latency_seconds
     s.write_callback = Base.unsafe_convert(Ptr{Cvoid}, callback)
@@ -206,23 +201,47 @@ function open_sound_stream(device::SoundIODevice, buffer::T, sample_rate::Intege
     result = open_sound_stream_unsafe!(out_ptr)
     open_sound_stream_error_check(result)
     # actual_s = unsafe_load(out_ptr) (Optional: Read back the actual achieved latency)
-    stream = SoundIOOutStream(out_ptr, s.format, s.sample_rate, buffer_ref, callback) #latency_seconds, actual_s.software_latency
+    stream = SoundIOOutStream(out_ptr, s.format, s.sample_rate, buffer_ref, callback, preserve) #latency_seconds, actual_s.software_latency
     push!(device.streams, stream) 
     return stream
 end
-function open_sound_stream(device::SoundIODevice, buffer::T, sample_rate::Integer, format::Symbol, latency_seconds::Float64 = 1.0) where {T <: SoundIOSynchronizer}
+function open_sound_stream(device::SoundIODevice, buffer::T, callback::Base.CFunction, preserve::Any, sample_rate::Integer, format::Symbol, latency_seconds::Float64 = 1.0) where {T <: SoundIOSynchronizer}
     if !haskey(SoundIoFormats, format)
         error("Unknown SoundIO format: :$format. Available: $(keys(SoundIoFormats))")
     end
-    return open_sound_stream(device, buffer, sample_rate, SoundIoFormats[format], latency_seconds)
+    return open_sound_stream(device, buffer, callback, preserve, sample_rate, SoundIoFormats[format], latency_seconds)
 end
-function Base.open(device::SoundIODevice, bufferspec, channels::Integer, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0)
-    if bufferspec isa Tuple{Ptr, Tuple{Integer, Integer}, Bool}
-        buffer = FrozenAudioBuffer(bufferspec...,channels)
+function open_sound_stream(device::SoundIODevice, buffer::T, callback_function::F, preserve::Any, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0) where {T <: SoundIOSynchronizer, F <: Function}
+    callback = make_sound_output_callback(T,callback_function)
+    return open_sound_stream(device,buffer,callback,preserve,sample_rate,format,latency_seconds)
+end
+function open_sound_stream(device::SoundIODevice, bufferspec::Tuple{Ptr, Tuple{Integer, Integer, Integer}, Bool}, preserve::Any, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0)
+    buffer = FrozenAudioBuffer(bufferspec...)
+    callback = make_sound_output_callback(typeof(buffer),frozen_audio_callback)
+    return open_sound_stream(device, buffer, callback, preserve, sample_rate, format, latency_seconds)
+end
+function open_sound_stream(device::SoundIODevice, bufferspec::Tuple{DataType,Integer}, preserve::Any, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0)
+    buffer = AudioCallbackSynchronizer(bufferspec...)
+    callback = make_sound_output_callback(typeof(buffer),realtime_audio_callback)
+    return open_sound_stream(device, buffer, callback, preserve, sample_rate, format, latency_seconds)
+end
+is_pointer_safe(::Type{T}) where {T<:DenseArray} = true
+is_pointer_safe(::Type{T}) where {T<:SubArray}   = Base.iscontiguous(T)
+is_pointer_safe(::Type{<:AbstractArray})         = false
+is_pointer_safe(A::AbstractArray) = is_pointer_safe(typeof(A))
+function Base.open(device::SoundIODevice, bufferspec::Tuple{AbstractArray{T,N},Bool}, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0) where {T,N}
+    if (N < 2) 
+        error("Audio data must have at least 2 dimensions: (Channels, Frames, ...)")
     else
-        buffer = AudioCallbackSynchronizer(bufferspec,channels)
+        audio_data,isclearing = bufferspec
+        if(!is_pointer_safe(audio_data))
+            # throw error
+        end
+        Channels = size(audio_data,1)
+        atom_frames = size(audio_data,2)
+        total_atoms = div(length(audio_data),(Channels*atom_frames))
+        return open_sound_stream(device,(pointer(audio_data),(Channels,atom_frames,total_atoms),isclearing),audio_data,sample_rate,format,latency_seconds)
     end
-    return open_sound_stream(device, buffer, sample_rate, format, latency_seconds)
 end
 # 4. Resume existing stream. (Streams persist over context changes)
 function reopen!(stream::SoundIOOutStream)
