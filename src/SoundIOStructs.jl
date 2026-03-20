@@ -36,10 +36,11 @@ abstract type SoundIOSynchronizer end
 struct FrozenAudioBuffer{T,Channels,isatomic,isclearing} <: SoundIOSynchronizer # The "Container": The single object we track in Julia
     layout::FrozenAudioLayout{T,isatomic,isclearing}
     stream::FrozenAudioStream
-    function FrozenAudioBuffer(ptr::Ptr{T}, atom_dimensions::Tuple{Integer,Integer}, isclearing::Bool, Channels::Integer) where {T}
-        layout = FrozenAudioLayout(ptr, map(Int,atom_dimensions), isclearing)
+    function FrozenAudioBuffer(ptr::Ptr{T}, specification_dimensions::Tuple{Integer, Integer,Integer}, isclearing::Bool) where {T}
+        Channels::Int, atom_frames::Int, total_atoms::Int = specification_dimensions
+        layout = FrozenAudioLayout(ptr, (atom_frames, total_atoms), isclearing)
         stream = FrozenAudioStream()
-        return new{T,Channels,atom_dimensions[2]!=1,isclearing}(layout, stream)
+        return new{T,Channels,total_atoms!=1,isclearing}(layout, stream)
     end
 end
 struct AudioCallbackMessage
@@ -102,6 +103,7 @@ struct SoundIOOutStream{T <: SoundIOSynchronizer}
     rate::Cint #Int32
     sync::Ref{T}
     callback_ptr::Base.CFunction
+    anchor::Any
 end
 struct SoundIODevicePtrs
     device::Ptr{Cvoid}
