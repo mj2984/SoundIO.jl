@@ -52,44 +52,45 @@ bit_depth(::Type{Channels{N, T}}) where {N, T} = bit_depth(T)
 
 function audioread!(dest::AbstractVector{T}, meta::WavMetadata) where T
     ET = T <: Channels ? eltype(T) : T
-    target_bits = bit_depth(ET)
-    source_bits = meta.nbits
     nchans = channel_count(T)
+    target_bits = sizeof(ET) * 8
+    
+    if ET <: Integer && target_bits < meta.nbits
+        error("Downscaling not supported: Source is $(meta.nbits)-bit, but destination is $(target_bits)-bit. Use a larger type or a Float.")
+    end
+
     open(meta.path, "r") do io
         seek(io, meta.data_offset)
-
-        # Determine if we need specialized 24-bit swizzling
-        if source_bits == 24
+        if meta.nbits == 24
             raw_bytes = read(io, meta.data_size)
             @inbounds for i in 1:length(dest)
                 samples = ntuple(nchans) do ch
-                    idx = ((i-1) * nchans + (ch-1)) * 3 + 1
-                    u24 = UInt32(raw_bytes[idx]) | (UInt32(raw_bytes[idx+1]) << 8) | (UInt32(raw_bytes[idx+2]) << 16)
-                    s32 = (Int32(u24) << 8) >> 8 # Sign extend to 32-bit
+                    idx_offset = ((i-1) * nchans + (ch-1)) * 3
+                    u24 = UInt32(raw_bytes[idx_offset + 1]) | 
+                          (UInt32(raw_bytes[idx_offset + 2]) << 8) | 
+                          (UInt32(raw_bytes[idx_offset + 3]) << 16)
                     
-                    # DYNAMIC SHIFT: If target is larger than source (e.g. Int32)
-                    if ET <: Integer && target_bits > 24
-                        return s32 << (target_bits - 24)
+                    s32_left = reinterpret(Int32, u24 << 8)
+                    
+                    if ET <: Integer
+                        return s32_left# % ET 
                     elseif ET <: FixedPoint
-                        return reinterpret(ET, Int24(s32))
+                        return reinterpret(ET, s32_left)
+                    elseif ET <: AbstractFloat
+                        return Float32(s32_left) / 2147483648.0f0
                     else
-                        return Int24(s32)
+                        return s32_left
                     end
                 end
-                dest[i] = T <: Channels ? T(samples...) : samples
+                dest[i] = T <: Channels ? T(samples...) : samples[1]
             end
         else
-            # Standard 8, 16, 32-bit path
-            if ET <: Integer && target_bits > source_bits
-                # Handle expansion (e.g., 16-bit file to Int32 array)
-                # ... read raw source_bits and shift left ...
-            else
-                read!(io, dest) # Direct read if types match or are floats
-            end
+            read!(io, dest)
         end
     end
     return dest
 end
+
 function audioread(meta::WavMetadata, ::Type{T}=Any) where T
     BaseType = T !== Any ? T : 
                meta.format_tag == 3 ? (meta.nbits == 32 ? Float32 : Float64) :
