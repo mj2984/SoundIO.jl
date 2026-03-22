@@ -225,9 +225,10 @@ function open_sound_stream(device::SoundIODevice, bufferspec::Tuple{DataType,Int
     callback = make_sound_output_callback(typeof(buffer),realtime_audio_callback)
     return open_sound_stream(device, buffer, callback, preserve, sample_rate, format, latency_seconds)
 end
-is_pointer_safe(::Type{T}) where {T<:DenseArray} = true
-is_pointer_safe(::Type{T}) where {T<:SubArray}   = Base.iscontiguous(T)
-is_pointer_safe(::Type{<:AbstractArray})         = false
+is_pointer_safe(::Type{<:DenseArray}) = true
+is_pointer_safe(::Type{T}) where {T<:SubArray} = Base.iscontiguous(T)
+is_pointer_safe(::Type{<:Base.ReinterpretArray{T, N, S, A}}) where {T, N, S, A} = isbitstype(T) && is_pointer_safe(A)
+is_pointer_safe(::Type{<:AbstractArray}) = false
 is_pointer_safe(A::AbstractArray) = is_pointer_safe(typeof(A))
 function Base.open(device::SoundIODevice, bufferspec::Tuple{AbstractArray{T,N},Bool}, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0) where {T,N}
     if (N < 2) 
