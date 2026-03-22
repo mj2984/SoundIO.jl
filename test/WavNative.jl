@@ -121,3 +121,23 @@ function audioread(path::String; native_output::Bool=true)
     end
 end
 end
+#=
+function align_audio_bytes!(data,source_bits::T,destination_format::Symbol) where {T<:Integer}
+    if(source_bits == 24 && destination_format == :Int32Little)
+        map!(x -> x << 8, data,data)
+    elseif(source_bits == 16 && destination_format == :Int32Little)
+        map!(x -> x << 16, data,data)
+    end
+end
+@inline function process_audio(path)
+    audio_data,sample_rate, nbits, opt = wavread(path, format = "native", raw_layout = true)
+    if(nbits > 16)
+        destination_format = :Int32Little
+        align_audio_bytes!(audio_data,nbits,destination_format)
+        map!(x -> x>> 16, audio_data, audio_data)
+    else
+        destination_format = :Int16Little
+    end
+    return Int16.(audio_data), sample_rate, :Int16Little#destination_format
+end
+=#
