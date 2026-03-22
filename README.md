@@ -20,7 +20,7 @@ SoundIO.jl lets you **have your cake and eat it too**: achieve maximum performan
 *   **Performance First:** Internal buffers and synchronizers are designed for minimal latency and zero allocations in the hot path.
 *   **Extensible by Design:** Whether using the built-in **Frozen Audio Buffer** or defining a custom `<:SoundIOSynchronizer`, the infrastructure is built to be extended without sacrificing performance.
 *   **Fused Operations:** Control the input pipeline to implement smart optimizations—like fusing signal processing and data packing—directly within Julia.
-
+> <sup>1</sup> *Transparency is guaranteed for 'Raw' devices; behavior on non-raw devices depends on the OS backend.*
 ---
 
 ## 🧱 Core Synchronization Mechanisms
