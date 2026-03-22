@@ -1,12 +1,10 @@
 include(raw"../src/SoundIO.jl")
-include(raw"AudioCore.jl")
-include(raw"WavNative.jl")
 using .SoundIO
-using .WavNative
-using .AudioCore
+#using .WavNative
+#using .SoundCore
 #using PtrArrays
 # Frozen Audio Buffer Example.
-function play_audio(audio_data::AbstractArray{T}, sample_rate::Integer, device::SoundIODevice, format::fmtType) where {fmtType <: Union{Symbol,Int32}, T<:Number}
+function play_audio(audio_data::AbstractArray{T}, sample_rate::Integer, device::SoundIODevice, format::fmtType) where {fmtType <: Union{Symbol,Int32}, T<:Union{Number,Sample}}
     stream = open(device, (audio_data, false), sample_rate, format) # The stream captures the audio data from being Garbage collected.
     buffer_stream = stream.sync[].stream::FrozenAudioStream
     start!(stream) #println("🔊 Playback started. Press Ctrl+C to stop.")
@@ -69,17 +67,12 @@ function play_audio_threaded(audio_data::AbstractArray{T}, sample_rate::Integer,
     destroy_sound_stream_unsafe(stream)
     println("Playback finished.")
 end
-function get_destination_format(T::DataType)
-    if T == Int32
-        return :Int32Little
-    elseif T == Int16
-        return :Int16Little
-    end
-end
+get_destination_format(::Type{Int32}) = :Int32Little
+get_destination_format(::Type{Int16}) = :Int16Little
+get_destination_format(::Type{Sample{N, T}}) where {N, T} = get_destination_format(T)
 function play_music(sound_file::String,audio_device::SoundIODevice)
-    audio_data,sample_rate = audioread(sound_file,native_output = false)
-    audio_data_channelview = channelview(audio_data)
-    play_audio(audio_data_channelview,Int(sample_rate),audio_device,get_destination_format(eltype(audio_data_channelview)))
+    audio_data,sample_rate = audioread(sound_file,false)
+    play_audio(audio_data,Int(sample_rate),audio_device,get_destination_format(eltype(audio_data)))
 end
 #1. The Watcher (Runs in the background)
 #=
