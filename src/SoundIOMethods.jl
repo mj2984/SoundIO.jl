@@ -230,6 +230,19 @@ is_pointer_safe(::Type{T}) where {T<:SubArray} = Base.iscontiguous(T)
 is_pointer_safe(::Type{<:Base.ReinterpretArray{T, N, S, A}}) where {T, N, S, A} = isbitstype(T) && is_pointer_safe(A)
 is_pointer_safe(::Type{<:AbstractArray}) = false
 is_pointer_safe(A::AbstractArray) = is_pointer_safe(typeof(A))
+function Base.open(device::SoundIODevice, bufferspec::Tuple{AbstractArray{Sample{Channels, T},N},Bool}, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0) where {Channels,T,N}
+    if (N < 1) 
+        error("Audio data must have at least 1 dimensions: (Frames, ...)")
+    else
+        audio_data,isclearing = bufferspec
+        if(!is_pointer_safe(audio_data))
+            # throw error
+        end
+        atom_frames = size(audio_data,1)
+        total_atoms = div(length(audio_data),(atom_frames))
+        return open_sound_stream(device,(convert(Ptr{T},pointer(audio_data)),(Channels,atom_frames,total_atoms),isclearing),audio_data,sample_rate,format,latency_seconds)
+    end
+end
 function Base.open(device::SoundIODevice, bufferspec::Tuple{AbstractArray{T,N},Bool}, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0) where {T,N}
     if (N < 2) 
         error("Audio data must have at least 2 dimensions: (Channels, Frames, ...)")
