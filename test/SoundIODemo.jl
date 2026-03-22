@@ -1,10 +1,29 @@
 include(raw"../src/SoundIO.jl")
+include(raw"AudioCore.jl")
+include(raw"WavNative.jl")
 using .SoundIO
-using WAV
-using PtrArrays
-# A simple audio streamer that plays from RAM (audio_data).
-# Example of pure julia pipeline to interface with SoundIO buffers.
-function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T, Channels}, audio_data::Matrix{T}) where {T, Channels}
+using .WavNative
+using .AudioCore
+#using PtrArrays
+# Frozen Audio Buffer Example.
+function play_audio(audio_data::AbstractArray{T}, sample_rate::Integer, device::SoundIODevice, format::fmtType) where {fmtType <: Union{Symbol,Int32}, T<:Number}
+    stream = open(device, (audio_data, false), sample_rate, format) # The stream captures the audio data from being Garbage collected.
+    buffer_stream = stream.sync[].stream::FrozenAudioStream
+    start!(stream) #println("🔊 Playback started. Press Ctrl+C to stop.")
+    try
+        exchange::FrozenAudioExchange = @atomic buffer_stream.exchange
+        while exchange.status == CallbackJuliaDone
+            wait(buffer_stream)
+            exchange = @atomic buffer_stream.exchange
+        end
+    finally
+        close(buffer_stream)
+        destroy_sound_stream_unsafe(stream) # Stop stream playback when done or interrupted
+        #filter!(s -> s != stream_ptr, ctx.streams)
+    end
+end
+# AudioCallbackSynchronizer Example.
+function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T, Channels}, audio_data::AbstractArray{T}) where {T, Channels}
     total_frames::Int = size(audio_data, 2)
     current_frame::Int = 0
     GC.@preserve audio_data begin
@@ -41,59 +60,26 @@ function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T, Channels
     halt_sound_buffer(sync)
 end
 # Uses the audio_streamer_ram_playback to manage streaming.
-function play_audio_threaded(audio_data::Matrix{T}, sample_rate::Integer, device::SoundIODevice, format::fmtType) where {fmtType <: Union{Symbol,Int32},T}
+function play_audio_threaded(audio_data::AbstractArray{T}, sample_rate::Integer, device::SoundIODevice, format::fmtType) where {fmtType <: Union{Symbol,Int32},T}
     stream = SoundIO.open_sound_stream(device, (T, size(audio_data, 1)), nothing, sample_rate, format)
     sync = stream.sync[]
-    # worker_task = Threads.@spawn run_audio_worker!(sync, audio_data)
-    worker_task = @task audio_streamer_ram_playback(sync, audio_data)
-    ccall(:jl_set_task_tid, Cvoid, (Any, Int16), worker_task, 5) 
-    worker_task.sticky = true
-    schedule(worker_task)
+    worker_task = Threads.@spawn :interactive audio_streamer_ram_playback(sync, audio_data)
     start!(stream)
-    while (s = @atomic sync.message).status > 0
-        wait(sync) #wait_unsafe(device) #yield()
-    end
-    destroy_sound_stream_unsafe(stream)
     wait(worker_task)
+    destroy_sound_stream_unsafe(stream)
     println("Playback finished.")
 end
-function align_audio_bytes!(data,source_bits::T,destination_format::Symbol) where {T<:Integer}
-    if(source_bits == 24 && destination_format == :Int32Little)
-        map!(x -> x << 8, data,data)
-    elseif(source_bits == 16 && destination_format == :Int32Little)
-        map!(x -> x << 16, data,data)
-    end
-end
-@inline function process_audio(path)
-    audio_data,sample_rate, nbits, opt = wavread(path, format = "native", raw_layout = true)
-    if(nbits > 16)
-        destination_format = :Int32Little
-        align_audio_bytes!(audio_data,nbits,destination_format)
-    else
-        destination_format = :Int16Little
-    end
-    return audio_data, sample_rate, destination_format
-end
-function play_audio(audio_data::Matrix{T}, sample_rate::Integer, device::SoundIODevice, format::fmtType) where {fmtType <: Union{Symbol,Int32}, T<:Number}
-    stream = open(device, (audio_data, false), sample_rate, format) # The stream captures the audio data from being Garbage collected.
-    buffer_stream = stream.sync[].stream::FrozenAudioStream
-    start!(stream) #println("🔊 Playback started. Press Ctrl+C to stop.")
-    try
-        exchange::FrozenAudioExchange = @atomic buffer_stream.exchange
-        while exchange.status == CallbackJuliaDone
-            wait(buffer_stream)
-            exchange = @atomic buffer_stream.exchange
-        end
-    finally
-        close(buffer_stream)
-        destroy_sound_stream_unsafe(stream) # Stop stream playback when done or interrupted
-        #filter!(s -> s != stream_ptr, ctx.streams)
+function get_destination_format(T::DataType)
+    if T == Int32
+        return :Int32Little
+    elseif T == Int16
+        return :Int16Little
     end
 end
 function play_music(sound_file::String,audio_device::SoundIODevice)
-    audio_data,sample_rate,destination_format::Symbol = process_audio(sound_file)
-    play_audio(audio_data,Int(sample_rate),audio_device,destination_format)
-    #play_audio_threaded(audio_data,Int32(sample_rate),audio_device,destination_format)
+    audio_data,sample_rate = audioread(sound_file,native_output = false)
+    audio_data_channelview = channelview(audio_data)
+    play_audio(audio_data_channelview,Int(sample_rate),audio_device,get_destination_format(eltype(audio_data_channelview)))
 end
 #1. The Watcher (Runs in the background)
 #=
