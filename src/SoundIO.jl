@@ -3,10 +3,12 @@
 # libsoundio is Copyright (c) 2015 Andrew Kelley.
 module SoundIO
 using Libdl, libsoundio_jll
+include("SoundCore.jl")
 include("SoundIOConstants.jl")
 include("SoundIOStructs.jl")
 include("SoundIOPrettyPrintMethods.jl")
 include("SoundIOMethods.jl")
+include("WavNative.jl")
 export SoundIOContext, SoundIODevice, SoundIOOutStream, FrozenAudioStream, FrozenAudioExchange,
        SoundIOSynchronizer, AudioCallbackSynchronizer,
        is_connected_unsafe, is_connected,open_unsafe!, open!, connect_unsafe!, connect!,
@@ -14,5 +16,5 @@ export SoundIOContext, SoundIODevice, SoundIOOutStream, FrozenAudioStream, Froze
        enumerate_devices_unsafe!, enumerate_devices!, supported_formats,
        start!, CallbackStopped, CallbackJuliaDone, CallbackStatusReady,
        acquire_sound_buffer_ptr, acquire_sound_buffer, release_sound_buffer, halt_sound_buffer,
-       destroy_sound_stream_unsafe, destroy_sound_stream!
+       destroy_sound_stream_unsafe, destroy_sound_stream!, AudioCallbackMessage
 end
