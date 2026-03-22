@@ -49,31 +49,34 @@ end
 bit_depth(::Type{T}) where {T<:Number} = sizeof(T) * 8
 bit_depth(::Type{Fixed{T, f}}) where {T, f} = sizeof(T) * 8
 bit_depth(::Type{Channels{N, T}}) where {N, T} = bit_depth(T)
-
 function audioread!(dest::AbstractVector{T}, meta::WavMetadata) where T
     ET = T <: Channels ? eltype(T) : T
-    nchans = channel_count(T)
-    target_bits = sizeof(ET) * 8
+    nchans = meta.nchannels
     
-    if ET <: Integer && target_bits < meta.nbits
-        error("Downscaling not supported: Source is $(meta.nbits)-bit, but destination is $(target_bits)-bit. Use a larger type or a Float.")
-    end
-
     open(meta.path, "r") do io
         seek(io, meta.data_offset)
+
         if meta.nbits == 24
-            raw_bytes = read(io, meta.data_size)
-            @inbounds for i in 1:length(dest)
-                samples = ntuple(nchans) do ch
-                    idx_offset = ((i-1) * nchans + (ch-1)) * 3
-                    u24 = UInt32(raw_bytes[idx_offset + 1]) | 
-                          (UInt32(raw_bytes[idx_offset + 2]) << 8) | 
-                          (UInt32(raw_bytes[idx_offset + 3]) << 16)
+            # Buffer for one "frame" (all channels) to minimize I/O calls
+            frame_bytes = Vector{UInt8}(undef, nchans * 3)
+            
+            for i in 1:length(dest)
+                # Read exactly one frame's worth of bytes
+                read!(io, frame_bytes)
+                
+                # Use a simple for-loop for channels instead of ntuple
+                # The compiler will "unroll" this for Mono/Stereo
+                samples_tuple = ntuple(nchans) do ch
+                    offset = (ch - 1) * 3
+                    u24 = UInt32(frame_bytes[offset + 1]) | 
+                          (UInt32(frame_bytes[offset + 2]) << 8) | 
+                          (UInt32(frame_bytes[offset + 3]) << 16)
                     
                     s32_left = reinterpret(Int32, u24 << 8)
-                    
+
+                    # Branching on types is free because ET is a compile-time constant
                     if ET <: Integer
-                        return s32_left# % ET 
+                        return s32_left % ET
                     elseif ET <: FixedPoint
                         return reinterpret(ET, s32_left)
                     elseif ET <: AbstractFloat
@@ -82,9 +85,11 @@ function audioread!(dest::AbstractVector{T}, meta::WavMetadata) where T
                         return s32_left
                     end
                 end
-                dest[i] = T <: Channels ? T(samples...) : samples[1]
+                
+                @inbounds dest[i] = T <: Channels ? T(samples_tuple...) : samples_tuple[1]
             end
         else
+            # Standard 8, 16, 32-bit paths use Julia's highly optimized read!
             read!(io, dest)
         end
     end
