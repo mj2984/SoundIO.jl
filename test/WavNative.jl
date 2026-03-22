@@ -5,15 +5,17 @@ using BitIntegers, FixedPointNumbers
 
 export WavMetadata,get_wav_layout, audioread, audioread!
 
-struct WavMetadata{nchans}
+struct WavMetadata{nbits,nchans}
     path::String
     format_tag::UInt16
-    nchannels::Int
     sample_rate::Int
-    nbits::Int
     data_offset::Int64
     data_size::Int64
 end
+
+bit_depth(::Type{T}) where {T<:Number} = sizeof(T) * 8
+bit_depth(::Type{Fixed{T, f}}) where {T, f} = sizeof(T) * 8
+bit_depth(::Type{Channels{N, T}}) where {N, T} = bit_depth(T)
 
 const TransportMapping = Dict{Int, DataType}(
     8  => UInt8,
@@ -41,22 +43,19 @@ function get_wav_layout(path::String)
             end
             seek(io, curr + sz + (sz % 2))
         end
-        return WavMetadata{chans}(path, fmt_tag, chans, rate, bits, data_offset, data_size)
+        return WavMetadata{bits,chans}(path, fmt_tag, rate, data_offset, data_size)
     end
 end
 
-bit_depth(::Type{T}) where {T<:Number} = sizeof(T) * 8
-bit_depth(::Type{Fixed{T, f}}) where {T, f} = sizeof(T) * 8
-bit_depth(::Type{Channels{N, T}}) where {N, T} = bit_depth(T)
-function audioread!(dest::AbstractVector{T}, meta::WavMetadata{nchans}) where {T,nchans}
+function audioread!(dest::AbstractVector{T}, meta::WavMetadata{nbits,nchans}) where {T,nbits,nchans}
     ET = T <: Channels ? eltype(T) : T
     open(meta.path, "r") do io
         seek(io, meta.data_offset)
-        if meta.nbits == 24
+        if nbits == 24
             raw_bytes = Vector{UInt8}(undef, meta.data_size)
             read!(io, raw_bytes)
             bytes_per_frame = nchans * 3
-            for i in 1:length(dest)
+            @simd for i in 1:length(dest)
                 frame_offset = (i - 1) * bytes_per_frame
                 samples_tuple = ntuple(nchans) do ch
                     offset = frame_offset + (ch - 1) * 3
@@ -83,13 +82,13 @@ function audioread!(dest::AbstractVector{T}, meta::WavMetadata{nchans}) where {T
     return dest
 end
 
-function audioread(meta::WavMetadata, ::Type{T}=Any) where T
+function audioread(meta::WavMetadata{nbits,nchans}, ::Type{T}=Any) where {T,nbits,nchans}
     BaseType = T !== Any ? T : 
-               meta.format_tag == 3 ? (meta.nbits == 32 ? Float32 : Float64) :
-               meta.nbits == 16 ? Q0f15 : (meta.nbits == 24 ? Q0f23 : Q0f31)
-    FinalType = meta.nchannels == 2 ? Stereo{BaseType} : 
-                meta.nchannels == 1 ? BaseType : Channels{meta.nchannels, BaseType}
-    n_frames = meta.data_size ÷ (meta.nchannels * (meta.nbits ÷ 8))
+               meta.format_tag == 3 ? (nbits == 32 ? Float32 : Float64) :
+               nbits == 16 ? Q0f15 : (nbits == 24 ? Q0f23 : Q0f31)
+    FinalType = nchans == 2 ? Stereo{BaseType} : 
+                nchans == 1 ? BaseType : Channels{nchans, BaseType}
+    n_frames = meta.data_size ÷ (nchans * (nbits ÷ 8))
     dest = Vector{FinalType}(undef, n_frames)
     audioread!(dest, meta)
     return dest,meta.sample_rate
@@ -98,33 +97,15 @@ function audioread(path::String, ::Type{T}=Any) where T
     meta = get_wav_layout(path)
     audioread(meta,T)
 end
+function audioread(meta::WavMetadata{nbits,nchans}, native_output::Bool) where {nbits,nchans} 
+    audioread(meta, TransportMapping[nbits])
+end
 function audioread(path::String; native_output::Bool=true)
     meta = get_wav_layout(path)
     if native_output
         return audioread(meta, Any)
     else
-        T = TransportMapping[meta.nbits]
-        return audioread(meta, T)
+        return audioread(meta, native_output)
     end
 end
 end
-#=
-function align_audio_bytes!(data,source_bits::T,destination_format::Symbol) where {T<:Integer}
-    if(source_bits == 24 && destination_format == :Int32Little)
-        map!(x -> x << 8, data,data)
-    elseif(source_bits == 16 && destination_format == :Int32Little)
-        map!(x -> x << 16, data,data)
-    end
-end
-@inline function process_audio(path)
-    audio_data,sample_rate, nbits, opt = wavread(path, format = "native", raw_layout = true)
-    if(nbits > 16)
-        destination_format = :Int32Little
-        align_audio_bytes!(audio_data,nbits,destination_format)
-        map!(x -> x>> 16, audio_data, audio_data)
-    else
-        destination_format = :Int16Little
-    end
-    return Int16.(audio_data), sample_rate, :Int16Little#destination_format
-end
-=#
