@@ -15,7 +15,7 @@ SoundIO.jl lets you **have your cake and eat it too**: achieve maximum performan
 ---
 
 ## 🚀 Why SoundIO.jl?
-*   **Transparent Processing*:** No hidden OS mixing or "magic" processing. If your hardware supports it—from high-bandwidth PCM to high-precision telemetry—SoundIO.jl can drive it.
+*   **Transparent Processing:*** No hidden OS mixing or "magic" processing. If your hardware supports it—from high-bandwidth PCM to high-precision telemetry—SoundIO.jl can drive it.
 *   **Intuitive & Safe:** A Julian API (`open`, `close`, `isopen`) with rich REPL pretty-printing and Symbol-based error handling.
 *   **Performance First:** Internal buffers and synchronizers are designed for minimal latency and zero allocations in the hot path.
 *   **Extensible by Design:** Whether using the built-in **Frozen Audio Buffer** or defining a custom `<:SoundIOSynchronizer`, the infrastructure is built to be extended without sacrificing performance.
