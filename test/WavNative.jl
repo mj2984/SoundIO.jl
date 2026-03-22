@@ -5,7 +5,7 @@ using BitIntegers, FixedPointNumbers
 
 export WavMetadata,get_wav_layout, audioread, audioread!
 
-struct WavMetadata
+struct WavMetadata{nchans}
     path::String
     format_tag::UInt16
     nchannels::Int
@@ -41,55 +41,42 @@ function get_wav_layout(path::String)
             end
             seek(io, curr + sz + (sz % 2))
         end
-        return WavMetadata(path, fmt_tag, chans, rate, bits, data_offset, data_size)
+        return WavMetadata{chans}(path, fmt_tag, chans, rate, bits, data_offset, data_size)
     end
 end
 
-# Inside AudioCore or WavNative
 bit_depth(::Type{T}) where {T<:Number} = sizeof(T) * 8
 bit_depth(::Type{Fixed{T, f}}) where {T, f} = sizeof(T) * 8
 bit_depth(::Type{Channels{N, T}}) where {N, T} = bit_depth(T)
-function audioread!(dest::AbstractVector{T}, meta::WavMetadata) where T
+function audioread!(dest::AbstractVector{T}, meta::WavMetadata{nchans}) where {T,nchans}
     ET = T <: Channels ? eltype(T) : T
-    nchans = meta.nchannels
-    
     open(meta.path, "r") do io
         seek(io, meta.data_offset)
-
         if meta.nbits == 24
-            # Buffer for one "frame" (all channels) to minimize I/O calls
-            frame_bytes = Vector{UInt8}(undef, nchans * 3)
-            
+            raw_bytes = Vector{UInt8}(undef, meta.data_size)
+            read!(io, raw_bytes)
+            bytes_per_frame = nchans * 3
             for i in 1:length(dest)
-                # Read exactly one frame's worth of bytes
-                read!(io, frame_bytes)
-                
-                # Use a simple for-loop for channels instead of ntuple
-                # The compiler will "unroll" this for Mono/Stereo
+                frame_offset = (i - 1) * bytes_per_frame
                 samples_tuple = ntuple(nchans) do ch
-                    offset = (ch - 1) * 3
-                    u24 = UInt32(frame_bytes[offset + 1]) | 
-                          (UInt32(frame_bytes[offset + 2]) << 8) | 
-                          (UInt32(frame_bytes[offset + 3]) << 16)
+                    offset = frame_offset + (ch - 1) * 3
+                    @inbounds u24 = UInt32(raw_bytes[offset + 1])        | 
+                                    (UInt32(raw_bytes[offset + 2]) << 8) | 
+                                    (UInt32(raw_bytes[offset + 3]) << 16)
                     
-                    s32_left = reinterpret(Int32, u24 << 8)
-
-                    # Branching on types is free because ET is a compile-time constant
+                    s32_aligned = reinterpret(Int32, u24 << 8)
                     if ET <: Integer
-                        return s32_left % ET
+                        return s32_aligned % ET
                     elseif ET <: FixedPoint
-                        return reinterpret(ET, s32_left)
+                        return reinterpret(ET, s32_aligned)
                     elseif ET <: AbstractFloat
-                        return Float32(s32_left) / 2147483648.0f0
-                    else
-                        return s32_left
+                        return Float32(s32_aligned) * (1.0f0 / 2147483648.0f0)
                     end
+                    return s32_aligned
                 end
-                
                 @inbounds dest[i] = T <: Channels ? T(samples_tuple...) : samples_tuple[1]
             end
         else
-            # Standard 8, 16, 32-bit paths use Julia's highly optimized read!
             read!(io, dest)
         end
     end
