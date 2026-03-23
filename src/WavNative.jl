@@ -1,9 +1,9 @@
 #module WavNativeExpress
 using BitIntegers, FixedPointNumbers#SoundCore
 
-export WavMetadata, get_wav_layout, audioread_express
+export WavMetadata, get_wav_layout, audioread
 
-struct WavMetadata{nbits, nchans}
+struct WavMetadata{Bits, Channels}
     format_tag::UInt16
     sample_rate::Int
     data_offset::Int64
@@ -11,14 +11,16 @@ struct WavMetadata{nbits, nchans}
 end
 
 const TransportMapping = Dict{Int, DataType}(8 => UInt8, 16 => Int16, 24 => Int32, 32 => Int32)
+const WavMemoryInput = Union{Vector{UInt8},Tuple{Vector{UInt8},Ptr{Cvoid}}}
 
 const RIFF_ID = (UInt8('R'), UInt8('I'), UInt8('F'), UInt8('F'))
 const WAVE_ID = (UInt8('W'), UInt8('A'), UInt8('V'), UInt8('E'))
 const FMT_ID  = (UInt8('f'), UInt8('m'), UInt8('t'), UInt8(' '))
 const DATA_ID = (UInt8('d'), UInt8('a'), UInt8('t'), UInt8('a'))
 
-get_nbits(::WavMetadata{B, C}) where {B, C} = B
-get_nchans(::WavMetadata{B, C}) where {B, C} = C
+get_nbits(::WavMetadata{Bits, Channels}) where {Bits, Channels} = Bits
+get_nchans(::WavMetadata{Bits, Channels}) where {Bits, Channels} = Channels
+get_base_type(meta::WavMetadata{Bits, Channels}) where {Bits, Channels} = meta.format_tag == 3 ? (Bits == 32 ? Float32 : Float64) : Bits == 16 ? Q0f15 : (Bits == 24 ? Q0f23 : Q0f31)
 
 function malloc_read(path::String)
     sz = filesize(path)
@@ -35,83 +37,71 @@ function malloc_read(path::String)
     return unsafe_wrap(Vector{UInt8}, convert(Ptr{UInt8}, ptr), sz; own=false), ptr
 end
 
-function get_wav_layout(data::AbstractVector{UInt8})
+function get_layout_wav(data::AbstractVector{UInt8})
     length(data) < 44 && error("File too small to be a WAV")
-    (ntuple(i -> data[i], 4) === RIFF_ID && 
-     ntuple(i -> data[i+8], 4) === WAVE_ID) || error("Not a RIFF/WAVE file")
+    (ntuple(i -> data[i], 4) === RIFF_ID && ntuple(i -> data[i+8], 4) === WAVE_ID) || error("Not a RIFF/WAVE file")
     
-    fmt_tag, chans, rate, bits, data_offset, data_size = 0, 0, 0, 0, 0, 0
-    pos = 13
+    fmt_tag::UInt16, Channels::UInt16, rate::UInt32, Bits::UInt16, data_offset::Int64, data_size::Int64 = 0, 0, 0, 0, 0, 0
+    pos::Int = 13
     while pos + 8 <= length(data)
         chunk_id = (data[pos], data[pos+1], data[pos+2], data[pos+3])
         sz = UInt32(data[pos+4]) | (UInt32(data[pos+5]) << 8) | (UInt32(data[pos+6]) << 16) | (UInt32(data[pos+7]) << 24)
         chunk_data = pos + 8
         if chunk_id === FMT_ID
-            fmt_tag = UInt16(data[chunk_data]) | (UInt16(data[chunk_data+1]) << 8)
-            chans   = Int(UInt16(data[chunk_data+2]) | (UInt16(data[chunk_data+3]) << 8))
-            rate    = Int(UInt32(data[chunk_data+4]) | (UInt32(data[chunk_data+5]) << 8) | (UInt32(data[chunk_data+6]) << 16) | (UInt32(data[chunk_data+7]) << 24))
-            bits    = Int(UInt16(data[chunk_data+14]) | (UInt16(data[chunk_data+15]) << 8))
+            fmt_tag  = UInt16(data[chunk_data]) | (UInt16(data[chunk_data+1]) << 8)
+            Channels = (UInt16(data[chunk_data+2]) | (UInt16(data[chunk_data+3]) << 8))
+            rate     = (UInt32(data[chunk_data+4]) | (UInt32(data[chunk_data+5]) << 8) | (UInt32(data[chunk_data+6]) << 16) | (UInt32(data[chunk_data+7]) << 24))
+            Bits     = (UInt16(data[chunk_data+14]) | (UInt16(data[chunk_data+15]) << 8))
         elseif chunk_id === DATA_ID
             data_size, data_offset = Int64(sz), chunk_data
             break 
         end
         pos = chunk_data + sz + (sz % 2)
     end
-    return WavMetadata{bits, chans}(fmt_tag, rate, data_offset, data_size)
+    return WavMetadata{Int(Bits), Int(Channels)}(fmt_tag, Int(rate), data_offset, data_size)
 end
 
-function get_wav_layout(path::String)
+function get_layout_wav(path::String)
     header_chunk = open(io -> read(io, 1024), path, "r")
-    return get_wav_layout(header_chunk)
+    return get_layout_wav(header_chunk)
 end
 
-function audioread_express(data::Vector{UInt8}, meta::WavMetadata{nbits, nchans}, ::Type{T}, raw_ptr::Ptr{Cvoid}=C_NULL) where {nbits, nchans, T}
-    TargetType = nchans == 1 ? T : Sample{nchans, T}
-    n_frames = meta.data_size ÷ (nchans * (nbits ÷ 8))
+function base_wav_parser(Input::WavMemoryInput, meta::WavMetadata{Bits, Channels}, ::Type{T}) where {Bits, Channels, T}
+    data, raw_ptr, ismalloc = if Input isa Tuple
+        Input[1], Input[2], true
+    else
+        Input, pointer(Input), false
+    end
+    TargetType = Channels == 1 ? T : Sample{Channels, T}
+    n_frames = meta.data_size ÷ (Channels * (Bits ÷ 8))
 
-    if nbits != 24 && sizeof(T) * 8 == nbits # FAST PATH: Zero-copy view
-        audio_ptr = convert(Ptr{UInt8}, raw_ptr) + meta.data_offset - 1
+    if Bits != 24 && sizeof(T) * 8 == Bits # FAST PATH: Zero-copy
+        audio_ptr = convert(Ptr{UInt8}, raw_ptr) + (meta.data_offset - 1)
         final_view = unsafe_wrap(Array, reinterpret(Ptr{TargetType}, audio_ptr), n_frames)
-        if raw_ptr != C_NULL
-            _ = unsafe_wrap(Vector{UInt8}, convert(Ptr{UInt8}, raw_ptr), meta.data_offset + meta.data_size; own=true)
+        if ismalloc
+            finalizer(x -> Libc.free(raw_ptr), final_view)
         end
         return final_view, meta.sample_rate
     else # PROCESS PATH: Copy/Convert
         dest = Vector{TargetType}(undef, n_frames)
         _process_bits!(dest, data, meta)
-        raw_ptr != C_NULL && Libc.free(raw_ptr) 
+        if ismalloc
+            Libc.free(raw_ptr) 
+        end
         return dest, meta.sample_rate
     end
 end
 
-function audioread_express(data::Vector{UInt8}, meta::WavMetadata{nbits, nchans}) where {nbits, nchans}
-    BaseType = meta.format_tag == 3 ? (nbits == 32 ? Float32 : Float64) : nbits == 16 ? Q0f15 : (nbits == 24 ? Q0f23 : Q0f31)
-    return audioread_express(data, meta, BaseType)
-end
-
-audioread_express(data::Vector{UInt8}, meta::WavMetadata{nbits, nchans}, native::Bool) where {nbits, nchans} = 
-    native ? audioread_express(data, meta) : audioread_express(data, meta, TransportMapping[nbits])
-
-function audioread_express(path::String, ::Type{T}) where T 
+audioread(Input::WavMemoryInput, meta::WavMetadata, parser_function::F = base_wav_parser) where {F<:Function} = parser_function(Input, meta, get_base_type(meta))
+audioread(Input::WavMemoryInput, meta::WavMetadata{Bits, Channels}, native_output::Bool, parser_function::F = base_wav_parser) where {Bits, Channels, F<:Function} = native_output ? audioread(Input, meta) : parser_function(Input, meta, TransportMapping[Bits])
+function audioread(path::String, output_param::Union{Bool, Type} = false, parser_function::F = base_wav_parser) where {F<:Function}
     raw_vec, raw_ptr = malloc_read(path)
-    meta = get_wav_layout(raw_vec)
-    return audioread_express(raw_vec, meta, T, raw_ptr)
-end
-
-function audioread_express(path::String)
-    raw_vec, raw_ptr = malloc_read(path)
-    meta = get_wav_layout(raw_vec)
-    nbits = get_nbits(meta)
-    BaseType = meta.format_tag == 3 ? (nbits == 32 ? Float32 : Float64) : nbits == 16 ? Q0f15 : (nbits == 24 ? Q0f23 : Q0f31)
-    return audioread_express(raw_vec, meta, BaseType, raw_ptr)
-end
-
-function audioread_express(path::String, native_output::Bool)
-    raw_vec, raw_ptr = malloc_read(path)
-    meta = get_wav_layout(raw_vec)
-    nbits = get_nbits(meta)
-    BaseType = native_output ? (meta.format_tag == 3 ? (nbits == 32 ? Float32 : Float64) : nbits == 16 ? Q0f15 : (nbits == 24 ? Q0f23 : Q0f31)) : TransportMapping[nbits]
-    return audioread_express(raw_vec, meta, BaseType, raw_ptr)
+    meta = get_layout_wav(raw_vec)
+    if output_param isa Bool
+        return audioread((raw_vec, raw_ptr), meta, output_param, parser_function)
+    else
+        return parser_function((raw_vec, raw_ptr), meta, output_param)
+    end
 end
 
 @inline function _read_pcm_sample(ptr::Ptr{UInt8}, ::Val{24}, ::Type{ET}, format_tag) where {ET}
