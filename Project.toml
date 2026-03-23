@@ -1,7 +1,7 @@
 name = "SoundIO"
 uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"  # your package UUID
 authors = ["Manuel Jenkin Jerome <mj2984@columbia.edu>"]
-version = "0.1.2"
+version = "0.1.3"
 description = "Julia-native bindings to libsoundio for low-latency audio."
 license = "MIT"
 
@@ -9,7 +9,7 @@ license = "MIT"
 libsoundio_jll = "c22aa0dd-efad-54c6-b924-081a8340d351"
 Libdl = "8f399da3-3557-5675-b5ff-fb832c97cbdb"
 BitIntegers = "c3b6d118-76ef-56ca-8cc7-ebb389d030a1"
-FixedPointNumbers = "53c40c1b-1c15-5bbd-9269-614527c11a0b"
+FixedPointNumbers = "53c48c17-4a7d-5ca2-90c5-79b7896eea93"
 
 [compat]
 julia = "1.8"
