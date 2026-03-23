@@ -4,8 +4,8 @@ using .SoundIO
 #using .SoundCore
 #using PtrArrays
 # Frozen Audio Buffer Example.
-function play_audio(audio_data::AbstractArray{T}, sample_rate::Integer, device::SoundIODevice, format::fmtType) where {fmtType <: Union{Symbol,Int32}, T<:Union{Number,Sample}}
-    stream = open(device, (audio_data, false), sample_rate, format) # The stream captures the audio data from being Garbage collected.
+function play_audio(audio_data::AbstractArray{T}, sample_rate::Integer, device::SoundIODevice) where {T<:Union{Number,Sample}}
+    stream = open(device, (audio_data, false), sample_rate) # The stream captures the audio data from being Garbage collected.
     buffer_stream = stream.sync[].stream::FrozenAudioStream
     start!(stream) #println("🔊 Playback started. Press Ctrl+C to stop.")
     try
@@ -67,12 +67,9 @@ function play_audio_threaded(audio_data::AbstractArray{T}, sample_rate::Integer,
     destroy_sound_stream_unsafe(stream)
     println("Playback finished.")
 end
-get_destination_format(::Type{Int32}) = :Int32Little
-get_destination_format(::Type{Int16}) = :Int16Little
-get_destination_format(::Type{Sample{N, T}}) where {N, T} = get_destination_format(T)
 function play_music(sound_file::String,audio_device::SoundIODevice)
     audio_data,sample_rate = audioread(sound_file,false)
-    play_audio(audio_data,Int(sample_rate),audio_device,get_destination_format(eltype(audio_data)))
+    play_audio(audio_data,Int(sample_rate),audio_device)
 end
 #1. The Watcher (Runs in the background)
 #=
