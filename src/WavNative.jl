@@ -1,8 +1,7 @@
-#module WavNative
+#module WavNativeExpress
+using BitIntegers, FixedPointNumbers#SoundCore
 
-using BitIntegers, FixedPointNumbers
-
-export WavMetadata, get_wav_layout, audioread
+export WavMetadata, get_wav_layout, audioread_express
 
 struct WavMetadata{nbits, nchans}
     format_tag::UInt16
@@ -11,7 +10,7 @@ struct WavMetadata{nbits, nchans}
     data_size::Int64
 end
 
-const TransportMapping = Dict{Int, DataType}(8  => UInt8, 16 => Int16, 24 => Int32, 32 => Int32)
+const TransportMapping = Dict{Int, DataType}(8 => UInt8, 16 => Int16, 24 => Int32, 32 => Int32)
 
 const RIFF_ID = (UInt8('R'), UInt8('I'), UInt8('F'), UInt8('F'))
 const WAVE_ID = (UInt8('W'), UInt8('A'), UInt8('V'), UInt8('E'))
@@ -21,10 +20,6 @@ const DATA_ID = (UInt8('d'), UInt8('a'), UInt8('t'), UInt8('a'))
 get_nbits(::WavMetadata{B, C}) where {B, C} = B
 get_nchans(::WavMetadata{B, C}) where {B, C} = C
 
-"""
-    malloc_read(path)
-Allocates file buffer on the C-heap to reduce Julia GC pressure.
-"""
 function malloc_read(path::String)
     sz = filesize(path)
     ptr = Libc.malloc(sz)
@@ -37,7 +32,6 @@ function malloc_read(path::String)
         Libc.free(ptr)
         rethrow(e)
     end
-    # Wrap in Vector for parsing; own=false because we handle free() manually
     return unsafe_wrap(Vector{UInt8}, convert(Ptr{UInt8}, ptr), sz; own=false), ptr
 end
 
@@ -53,7 +47,7 @@ function get_wav_layout(data::AbstractVector{UInt8})
         sz = UInt32(data[pos+4]) | (UInt32(data[pos+5]) << 8) | (UInt32(data[pos+6]) << 16) | (UInt32(data[pos+7]) << 24)
         chunk_data = pos + 8
         if chunk_id === FMT_ID
-            fmt_tag = UInt16(data[chunk_data])   | (UInt16(data[chunk_data+1]) << 8)
+            fmt_tag = UInt16(data[chunk_data]) | (UInt16(data[chunk_data+1]) << 8)
             chans   = Int(UInt16(data[chunk_data+2]) | (UInt16(data[chunk_data+3]) << 8))
             rate    = Int(UInt32(data[chunk_data+4]) | (UInt32(data[chunk_data+5]) << 8) | (UInt32(data[chunk_data+6]) << 16) | (UInt32(data[chunk_data+7]) << 24))
             bits    = Int(UInt16(data[chunk_data+14]) | (UInt16(data[chunk_data+15]) << 8))
@@ -71,55 +65,55 @@ function get_wav_layout(path::String)
     return get_wav_layout(header_chunk)
 end
 
-function audioread(data::Vector{UInt8}, meta::WavMetadata{nbits, nchans}, ::Type{T}, raw_ptr::Ptr{Cvoid}=C_NULL) where {nbits, nchans, T}
+function audioread_express(data::Vector{UInt8}, meta::WavMetadata{nbits, nchans}, ::Type{T}, raw_ptr::Ptr{Cvoid}=C_NULL) where {nbits, nchans, T}
     TargetType = nchans == 1 ? T : Sample{nchans, T}
     n_frames = meta.data_size ÷ (nchans * (nbits ÷ 8))
 
     if nbits != 24 && sizeof(T) * 8 == nbits # FAST PATH: Zero-copy view
         audio_ptr = convert(Ptr{UInt8}, raw_ptr) + meta.data_offset - 1
         final_view = unsafe_wrap(Array, reinterpret(Ptr{TargetType}, audio_ptr), n_frames)
-        if raw_ptr != C_NULL# If we have a raw_ptr, tell Julia to own the original base allocation for cleanup
+        if raw_ptr != C_NULL
             _ = unsafe_wrap(Vector{UInt8}, convert(Ptr{UInt8}, raw_ptr), meta.data_offset + meta.data_size; own=true)
         end
         return final_view, meta.sample_rate
-    else # PROCESS PATH: Copy/Convert to new Julia Vector
+    else # PROCESS PATH: Copy/Convert
         dest = Vector{TargetType}(undef, n_frames)
         _process_bits!(dest, data, meta)
-        raw_ptr != C_NULL && Libc.free(raw_ptr) # Clear manual allocation if it exists
+        raw_ptr != C_NULL && Libc.free(raw_ptr) 
         return dest, meta.sample_rate
     end
 end
-function audioread(data::Vector{UInt8}, meta::WavMetadata{nbits, nchans}) where {nbits, nchans} # Interface methods for RAM-based Vector{UInt8}
+
+function audioread_express(data::Vector{UInt8}, meta::WavMetadata{nbits, nchans}) where {nbits, nchans}
     BaseType = meta.format_tag == 3 ? (nbits == 32 ? Float32 : Float64) : nbits == 16 ? Q0f15 : (nbits == 24 ? Q0f23 : Q0f31)
-    return audioread(data, meta, BaseType)
+    return audioread_express(data, meta, BaseType)
 end
-audioread(data::Vector{UInt8}, meta::WavMetadata{nbits, nchans}, native::Bool) where {nbits, nchans} = native ? audioread(data, meta) : audioread(data, meta, TransportMapping[nbits])
-function audioread(path::String, ::Type{T}) where T # Interface methods for file paths (Main entry points)
+
+audioread_express(data::Vector{UInt8}, meta::WavMetadata{nbits, nchans}, native::Bool) where {nbits, nchans} = 
+    native ? audioread_express(data, meta) : audioread_express(data, meta, TransportMapping[nbits])
+
+function audioread_express(path::String, ::Type{T}) where T 
     raw_vec, raw_ptr = malloc_read(path)
     meta = get_wav_layout(raw_vec)
-    return audioread(raw_vec, meta, T, raw_ptr)
+    return audioread_express(raw_vec, meta, T, raw_ptr)
 end
-function audioread(path::String)
+
+function audioread_express(path::String)
     raw_vec, raw_ptr = malloc_read(path)
     meta = get_wav_layout(raw_vec)
     nbits = get_nbits(meta)
     BaseType = meta.format_tag == 3 ? (nbits == 32 ? Float32 : Float64) : nbits == 16 ? Q0f15 : (nbits == 24 ? Q0f23 : Q0f31)
-    return audioread(raw_vec, meta, BaseType, raw_ptr)
+    return audioread_express(raw_vec, meta, BaseType, raw_ptr)
 end
 
-function audioread(path::String, native_output::Bool)
+function audioread_express(path::String, native_output::Bool)
     raw_vec, raw_ptr = malloc_read(path)
     meta = get_wav_layout(raw_vec)
     nbits = get_nbits(meta)
-    if native_output
-        BaseType = meta.format_tag == 3 ? (nbits == 32 ? Float32 : Float64) : nbits == 16 ? Q0f15 : (nbits == 24 ? Q0f23 : Q0f31)
-    else
-        BaseType = TransportMapping[nbits]
-    end
-    return audioread(raw_vec, meta, BaseType, raw_ptr)
+    BaseType = native_output ? (meta.format_tag == 3 ? (nbits == 32 ? Float32 : Float64) : nbits == 16 ? Q0f15 : (nbits == 24 ? Q0f23 : Q0f31)) : TransportMapping[nbits]
+    return audioread_express(raw_vec, meta, BaseType, raw_ptr)
 end
 
-# Optimized Scalar Readers
 @inline function _read_pcm_sample(ptr::Ptr{UInt8}, ::Val{24}, ::Type{ET}, format_tag) where {ET}
     u24 = UInt32(unsafe_load(ptr, 1)) | (UInt32(unsafe_load(ptr, 2)) << 8) | (UInt32(unsafe_load(ptr, 3)) << 16)
     s32 = reinterpret(Int32, u24 << 8) 
@@ -129,6 +123,7 @@ end
     end
     return s32
 end
+
 @inline function _read_pcm_sample(ptr::Ptr{UInt8}, ::Val{16}, ::Type{ET}, format_tag) where {ET}
     s16 = unsafe_load(reinterpret(Ptr{Int16}, ptr))
     if ET <: AbstractFloat;     return Float32(s16) * (1.0f0 / 32768.0f0)
@@ -136,6 +131,7 @@ end
     end
     return s16 % ET
 end
+
 @inline function _read_pcm_sample(ptr::Ptr{UInt8}, ::Val{32}, ::Type{ET}, format_tag) where {ET}
     u32 = unsafe_load(reinterpret(Ptr{UInt32}, ptr))
     if ET <: AbstractFloat
@@ -144,7 +140,6 @@ end
     return reinterpret(Int32, u32) % ET
 end
 
-# Vectorized Loop
 function _process_bits!(dest::AbstractVector{T}, raw::Vector{UInt8}, meta::WavMetadata{nbits, nchans}) where {T, nbits, nchans}
     ET = T <: Sample ? eltype(T) : T
     GC.@preserve raw begin
@@ -162,5 +157,4 @@ function _process_bits!(dest::AbstractVector{T}, raw::Vector{UInt8}, meta::WavMe
     end
     return dest
 end
-
 #end
