@@ -21,22 +21,22 @@ function play_audio(audio_data::AbstractArray{T}, sample_rate::Integer, device::
     end
 end
 # AudioCallbackSynchronizer Example.
-function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T, Channels}, audio_data::AbstractArray{T}) where {T, Channels}
-    total_frames::Int = size(audio_data, 2)
+function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T, Channels}, audio_data::AbstractArray{Sample{Channels,T}}) where {T, Channels}
+    total_frames::Int = size(audio_data, 1)
     current_frame::Int = 0
     GC.@preserve audio_data begin
         while current_frame < total_frames
-            res::Union{Symbol,Matrix{T}} = acquire_sound_buffer(sync)
+            res::Union{Symbol,Array{Sample{Channels,T},1}} = acquire_sound_buffer(sync)
             if res isa Symbol
                 break
             end
-            curr_buf::Matrix{T} = res
-            buf_frames::Int = size(curr_buf, 2)
+            curr_buf::Array{Sample{Channels,T}} = res
+            buf_frames::Int = size(curr_buf, 1)
             rem_frames::Int = total_frames - current_frame
             to_copy::Int = min(buf_frames, rem_frames)
-            @views copyto!(curr_buf[:, 1:to_copy], audio_data[:, current_frame+1:current_frame+to_copy])
+            @views copyto!(curr_buf[1:to_copy], audio_data[current_frame+1:current_frame+to_copy])
             if to_copy < buf_frames
-                @views fill!(curr_buf[:, to_copy+1:end], zero(T))
+                @views fill!(curr_buf[to_copy+1:end], zero(Sample{Channels, T}))
             end
             #=
             dst_ptr, buf_frames = acquire_sound_buffer_ptr(sync)
@@ -58,8 +58,8 @@ function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T, Channels
     halt_sound_buffer(sync)
 end
 # Uses the audio_streamer_ram_playback to manage streaming.
-function play_audio_threaded(audio_data::AbstractArray{T}, sample_rate::Integer, device::SoundIODevice, format::fmtType) where {fmtType <: Union{Symbol,Int32},T}
-    stream = SoundIO.open_sound_stream(device, (T, size(audio_data, 1)), nothing, sample_rate, format)
+function play_audio_threaded(audio_data::AbstractArray{T}, sample_rate::Integer, device::SoundIODevice) where {T<:Sample}
+    stream = SoundIO.open_sound_stream(device, T, nothing, sample_rate)
     sync = stream.sync[]
     worker_task = Threads.@spawn :interactive audio_streamer_ram_playback(sync, audio_data)
     start!(stream)
@@ -69,7 +69,8 @@ function play_audio_threaded(audio_data::AbstractArray{T}, sample_rate::Integer,
 end
 function play_music(sound_file::String,audio_device::SoundIODevice)
     audio_data,sample_rate = audioread(sound_file,false)
-    play_audio(audio_data,Int(sample_rate),audio_device)
+    #play_audio(audio_data,Int(sample_rate),audio_device)
+    play_audio_threaded(audio_data,Int(sample_rate),audio_device)
 end
 #1. The Watcher (Runs in the background)
 #=
