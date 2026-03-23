@@ -68,7 +68,7 @@ function play_audio_threaded(audio_data::AbstractArray{T}, sample_rate::Integer,
     println("Playback finished.")
 end
 function play_music(sound_file::String,audio_device::SoundIODevice)
-    audio_data,sample_rate = audioread(sound_file,false)
+    audio_data,sample_rate = audioread_express(sound_file,false)
     play_audio(audio_data,Int(sample_rate),audio_device)
 end
 #1. The Watcher (Runs in the background)
