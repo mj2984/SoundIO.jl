@@ -220,11 +220,14 @@ function open_sound_stream(device::SoundIODevice, bufferspec::Tuple{Ptr, Tuple{I
     callback = make_sound_output_callback(typeof(buffer),frozen_audio_callback)
     return open_sound_stream(device, buffer, callback, preserve, sample_rate, format, latency_seconds)
 end
-function open_sound_stream(device::SoundIODevice, bufferspec::Tuple{DataType,Integer}, preserve::Any, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0)
-    buffer = AudioCallbackSynchronizer(bufferspec...)
+function open_sound_stream(device::SoundIODevice, bufferspec::Type{<:Sample}, preserve::Any, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0)
+    buffer = AudioCallbackSynchronizer(bufferspec)
     callback = make_sound_output_callback(typeof(buffer),realtime_audio_callback)
     return open_sound_stream(device, buffer, callback, preserve, sample_rate, format, latency_seconds)
 end
+open_sound_stream(device::SoundIODevice, bufferspec::Type{<:Sample}, preserve::Any, sample_rate::Integer, latency_seconds::Float64 = 1.0) = open_sound_stream(device,bufferspec,preserve,sample_rate,get_destination_format(bufferspec),latency_seconds)
+open_sound_stream(device::SoundIODevice, bufferspec::Tuple{DataType,Integer}, preserve::Any, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0) = open_sound_stream(device,Sample{bufferspec[2],bufferspec[1]},preserve,sample_rate,format,latency_seconds)
+open_sound_stream(device::SoundIODevice, bufferspec::Tuple{DataType,Integer}, preserve::Any, sample_rate::Integer, latency_seconds::Float64 = 1.0) = open_sound_stream(device,Sample{bufferspec[2],bufferspec[1]},preserve,sample_rate,latency_seconds)
 is_pointer_safe(::Type{<:DenseArray}) = true
 is_pointer_safe(::Type{T}) where {T<:SubArray} = Base.iscontiguous(T)
 is_pointer_safe(::Type{<:Base.ReinterpretArray{T, N, S, A}}) where {T, N, S, A} = isbitstype(T) && is_pointer_safe(A)
@@ -348,7 +351,7 @@ end
         return frames_or_status # Returns the Int8 status code
     end
     #return unsafe_wrap(Matrix{T}, convert(Ptr{T}, hardware_ptr), (channels, actual_frames)) # Create the zero-allocation Matrix view
-    return unsafe_wrap(Matrix{T}, ptr, (Channels, frames_or_status))
+    return unsafe_wrap(Array, convert(Ptr{Sample{Channels, T}}, ptr), (frames_or_status))
 end
 @inline release_sound_buffer(sync::AudioCallbackSynchronizer) = update_callback_status_message(sync,CallbackJuliaDone)
 @inline halt_sound_buffer(sync::AudioCallbackSynchronizer) = update_callback_status_message(sync,CallbackStopped)
