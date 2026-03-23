@@ -2,7 +2,7 @@
 
 using BitIntegers, FixedPointNumbers
 import Base: +, -, *, /, show, eltype, promote_rule, broadcastable, getproperty
-
+import Base: zero
 BitIntegers.@define_integers 24
 
 export Q0f7, Q0f15, Q0f23, Q0f31, Int24, UInt24
@@ -45,6 +45,7 @@ channel_count(::Type{Sample{N, T}}) where {N, T} = N
 channel_count(::Type{T}) where {T<:Number} = 1
 
 # Basic Arithmetic
+@inline zero(::Type{Sample{N, T}}) where {N, T} = Sample{N, T}(ntuple(i -> zero(T), N))
 *(c::Sample{N, T}, f::Real) where {N, T} = Sample{N, T}(map(x -> x * f, c.data))
 +(a::Sample{N, T}, b::Sample{N, T}) where {N, T} = Sample{N, T}(map(+, a.data, b.data))
 
