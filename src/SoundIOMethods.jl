@@ -230,6 +230,17 @@ is_pointer_safe(::Type{T}) where {T<:SubArray} = Base.iscontiguous(T)
 is_pointer_safe(::Type{<:Base.ReinterpretArray{T, N, S, A}}) where {T, N, S, A} = isbitstype(T) && is_pointer_safe(A)
 is_pointer_safe(::Type{<:AbstractArray}) = false
 is_pointer_safe(A::AbstractArray) = is_pointer_safe(typeof(A))
+function get_destination_format(::Type{T}) where T
+    T === Int16   && return SoundIoFormats[:Int16Little]
+    T === Int32   && return SoundIoFormats[:Int32Little]
+    T === Int24   && return SoundIoFormats[:Int24Little]
+    T === Float32 && return SoundIoFormats[:Float32Little]
+    T === Float64 && return SoundIoFormats[:Float64Little]
+    # Fallback for types that aren't leaf-level integers/floats
+    error("No audio format mapping for type: $T")
+end
+get_destination_format(::Type{<:Fixed{T, f}}) where {T, f} = get_destination_format(T)
+get_destination_format(::Type{Sample{N, T}}) where {N, T} = get_destination_format(T)
 function Base.open(device::SoundIODevice, bufferspec::Tuple{AbstractArray{Sample{Channels, T},N},Bool}, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0) where {Channels,T,N}
     if (N < 1) 
         error("Audio data must have at least 1 dimensions: (Frames, ...)")
@@ -257,6 +268,8 @@ function Base.open(device::SoundIODevice, bufferspec::Tuple{AbstractArray{T,N},B
         return open_sound_stream(device,(pointer(audio_data),(Channels,atom_frames,total_atoms),isclearing),audio_data,sample_rate,format,latency_seconds)
     end
 end
+Base.open(device::SoundIODevice, bufferspec::Tuple{AbstractArray{T,N},Bool}, sample_rate::Integer, latency_seconds::Float64 = 1.0) where {T,N} = open(device,bufferspec,sample_rate,get_destination_format(T),latency_seconds)
+
 # 4. Resume existing stream. (Streams persist over context changes)
 function reopen!(stream::SoundIOOutStream)
     stream.ptr == C_NULL && error("Cannot reopen a null stream.")
