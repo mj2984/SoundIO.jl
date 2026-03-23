@@ -51,6 +51,7 @@ end
 mutable struct AudioCallbackSynchronizer{T,Channels} <: SoundIOSynchronizer
     @atomic message::AudioCallbackMessage
     notify_handle::Base.AsyncCondition
+    AudioCallbackSynchronizer(::Type{Sample{Channels,T}}) where {Channels,T} = new{T, Channels}(AudioCallbackMessage(CallbackStopped, C_NULL, 0),Base.AsyncCondition())
     AudioCallbackSynchronizer(T, Channels::Integer) = new{T, Channels}(AudioCallbackMessage(CallbackStopped, C_NULL, 0),Base.AsyncCondition())
 end
 # Internal C-struct for safe pointer access
