@@ -1,4 +1,4 @@
-module WavPackHybridLMS
+module WavPackHybridFinalToy
 
 export encode, decode, test_codec
 
@@ -9,7 +9,6 @@ const MAX_TAPS = 8
 const WEIGHT_SHIFT = 10
 const UPDATE_TABLE = Int32[0,1,2,2,3,3,4,4,5,6,7,8,9,10,12,14]
 const HYBRID_SHIFT_TABLE = [0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7]
-const BLOCK_SIZE = 1024
 
 # -------------------------
 # LMS Predictor
@@ -40,8 +39,9 @@ function lms_predict(s::LMS)
     return acc
 end
 
-function lms_update!(s::LMS, sample::Int32, err::Int32)
-    err_sign = err > 0 ? 1 : (err < 0 ? -1 : 0)
+function lms_update!(s::LMS, err::Int32, sample::Int32)
+    if err == 0 return end
+    err_sign = err > 0 ? 1 : -1
     @inbounds for i in 1:MAX_TAPS
         h = s.history[i]
         if h != 0
@@ -51,17 +51,17 @@ function lms_update!(s::LMS, sample::Int32, err::Int32)
             s.weights[i] = clamp(s.weights[i], -2048, 2048)
         end
     end
-    # Shift history
-    for i in MAX_TAPS:-1:2
+    # update history with reconstructed sample, not residual
+    @inbounds for i in MAX_TAPS:-1:2
         s.history[i] = s.history[i-1]
     end
     s.history[1] = sample
 end
 
 # -------------------------
-# Residual & shift helpers
+# Residual splitting
 # -------------------------
-@inline function compute_shift(err::Int32)
+function compute_shift(err::Int32)
     idx = min(abs(err),15)+1
     return HYBRID_SHIFT_TABLE[idx]
 end
@@ -169,108 +169,88 @@ function rice_decode(br::BitReader,k::Int)
 end
 
 # -------------------------
-# Encoder / Decoder
+# Encoder
 # -------------------------
-function encode(X::Matrix{Int16}; blocksize::Int=BLOCK_SIZE)
+function encode(X::Matrix{Int16}; blocksize::Int=1024)
     N,C = size(X)
     @assert C==2 "Only stereo supported"
-    lms = [LMS(), LMS()]
+    lms = [LMS(),LMS()]
     bw = BitWriter()
 
-    for blk in 1:blocksize:N
-        blk_end = min(blk+blocksize-1,N)
-        for n in blk:blk_end
-            L = Int32(X[n,1])
-            R = Int32(X[n,2])
+    for n in 1:N
+        L = Int32(X[n,1])
+        R = Int32(X[n,2])
 
-            # normal stereo residuals
-            predL = lms_predict(lms[1])
-            predR = lms_predict(lms[2])
-            errL = L - predL
-            errR = R - predR
-            shiftL = compute_shift(errL)
-            shiftR = compute_shift(errR)
-            qL,cL = split_residual(errL,shiftL)
-            qR,cR = split_residual(errR,shiftR)
-            sum_normal = abs(qL)+abs(cL)+abs(qR)+abs(cR)
+        predL = lms_predict(lms[1])
+        predR = lms_predict(lms[2])
+        errL = L - predL
+        errR = R - predR
 
-            # joint stereo residuals
-            mid = L - (R>>1)
-            side = R
-            predM = lms_predict(lms[1])
-            predS = lms_predict(lms[2])
-            errM = mid - predM
-            errS = side - predS
-            shiftM = compute_shift(errM)
-            shiftS = compute_shift(errS)
-            qM,cM = split_residual(errM,shiftM)
-            qS,cS = split_residual(errS,shiftS)
-            sum_joint = abs(qM)+abs(cM)+abs(qS)+abs(cS)
+        shiftL = compute_shift(errL)
+        shiftR = compute_shift(errR)
+        qL,cL = split_residual(errL,shiftL)
+        qR,cR = split_residual(errR,shiftR)
 
-            use_joint = sum_joint < sum_normal ? 1 : 0
-            write_bits!(bw,UInt32(use_joint),1)
+        kqL = compute_rice_k(qL)
+        kcL = compute_rice_k(cL)
+        kqR = compute_rice_k(qR)
+        kcR = compute_rice_k(cR)
 
-            if use_joint==1
-                channels = [(qM,cM,shiftM,lms[1]), (qS,cS,shiftS,lms[2])]
-            else
-                channels = [(qL,cL,shiftL,lms[1]), (qR,cR,shiftR,lms[2])]
-            end
+        # write shifts + k values
+        write_bits!(bw,UInt32(shiftL),4)
+        write_bits!(bw,UInt32(kqL),4)
+        write_bits!(bw,UInt32(kcL),4)
+        write_bits!(bw,UInt32(shiftR),4)
+        write_bits!(bw,UInt32(kqR),4)
+        write_bits!(bw,UInt32(kcR),4)
 
-            for (q,c,shift,s) in channels
-                write_bits!(bw,UInt32(shift),4)
-                kq = compute_rice_k(q)
-                kc = compute_rice_k(c)
-                write_bits!(bw,UInt32(kq),4)
-                write_bits!(bw,UInt32(kc),4)
-                rice_encode(bw,q,kq)
-                rice_encode(bw,c,kc)
-                recon_err = (q<<shift)+c
-                recon_sample = lms_predict(s)+recon_err
-                lms_update!(s, recon_sample, recon_err)
-            end
-        end
+        # encode residuals
+        rice_encode(bw,qL,kqL)
+        rice_encode(bw,cL,kcL)
+        rice_encode(bw,qR,kqR)
+        rice_encode(bw,cR,kcR)
+
+        # update LMS with reconstructed sample
+        lms_update!(lms[1], errL, L)
+        lms_update!(lms[2], errR, R)
     end
     flush_bits!(bw)
     return bw.data
 end
 
-function decode(bs::Vector{UInt8}, N::Int; blocksize::Int=BLOCK_SIZE)
+# -------------------------
+# Decoder
+# -------------------------
+function decode(bs::Vector{UInt8}, N::Int; blocksize::Int=1024)
     C=2
-    lms=[LMS(), LMS()]
+    lms=[LMS(),LMS()]
     br = BitReader(bs)
     Xrec = zeros(Int16,N,C)
 
-    for blk in 1:blocksize:N
-        blk_end = min(blk+blocksize-1,N)
-        for n in blk:blk_end
-            use_joint = read_bits!(br,1)
-            decoded = zeros(Int32,2)
+    for n in 1:N
+        shiftL = Int(read_bits!(br,4))
+        kqL    = Int(read_bits!(br,4))
+        kcL    = Int(read_bits!(br,4))
+        shiftR = Int(read_bits!(br,4))
+        kqR    = Int(read_bits!(br,4))
+        kcR    = Int(read_bits!(br,4))
 
-            for ch in 1:2
-                s=lms[ch]
-                shift = Int(read_bits!(br,4))
-                kq    = Int(read_bits!(br,4))
-                kc    = Int(read_bits!(br,4))
-                q = rice_decode(br,kq)
-                c = rice_decode(br,kc)
-                err = (q<<shift)+c
-                sample = lms_predict(s)+err
-                decoded[ch]=sample
-                lms_update!(s, sample, err)
-            end
+        qL = rice_decode(br,kqL)
+        cL = rice_decode(br,kcL)
+        qR = rice_decode(br,kqR)
+        cR = rice_decode(br,kcR)
 
-            if use_joint==1
-                mid = decoded[1]
-                side = decoded[2]
-                L = mid + (side>>1)
-                R = side
-            else
-                L = decoded[1]
-                R = decoded[2]
-            end
-            Xrec[n,1] = clamp16(L)
-            Xrec[n,2] = clamp16(R)
-        end
+        errL = (qL<<shiftL)+cL
+        errR = (qR<<shiftR)+cR
+
+        L = lms_predict(lms[1]) + errL
+        R = lms_predict(lms[2]) + errR
+
+        Xrec[n,1] = clamp16(L)
+        Xrec[n,2] = clamp16(R)
+
+        lms_update!(lms[1], errL, L)
+        lms_update!(lms[2], errR, R)
     end
     return Xrec
 end
@@ -279,7 +259,7 @@ end
 # Test
 # -------------------------
 function test_codec()
-    println("Running WavPackHybridLMS test...")
+    println("Running WavPackHybridFinalToy test...")
     X = rand(Int16,5000,2)
     bs = encode(X)
     Xrec = decode(bs,5000)
@@ -291,7 +271,7 @@ function test_codec()
     end
 end
 
-end # module
+end
 
-using .WavPackHybridLMS
-WavPackHybridLMS.test_codec()
+using .WavPackHybridFinalToy
+WavPackHybridFinalToy.test_codec()
