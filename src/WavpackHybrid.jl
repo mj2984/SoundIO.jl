@@ -1,4 +1,4 @@
-module WavPackHybridFinalToyV13
+module WavPackHybridFinalToyV14
 
 export encode, decode, test_codec
 
@@ -10,6 +10,10 @@ const WEIGHT_SHIFT = 10
 const UPDATE_TABLE = Int32[0,1,2,2,3,3,4,4,5,6,7,8,9,10,12,14]
 const BLOCKSIZE = 1024
 
+function compute_rice_k(x::Int32)
+    mag = max(abs(x), 1)
+    return clamp(fld(31 - leading_zeros(UInt32(mag)), 2), 0, 15)
+end
 # -------------------------
 # LMS
 # -------------------------
@@ -51,20 +55,6 @@ function lms_update!(s::LMS, err::Int32, sample::Int32)
         s.history[i] = s.history[i-1]
     end
     s.history[1] = sample
-end
-
-# -------------------------
-# Rice Coding
-# -------------------------
-function compute_rice_k(x::Int32)
-    mag = max(abs(x),1)
-    return clamp(fld(31 - leading_zeros(UInt32(mag)),2), 0, 15)
-end
-
-function split_residual(err::Int32, shift::Int)
-    q = err >> shift
-    c = err - (q << shift)
-    return q, c
 end
 
 # -------------------------
@@ -155,15 +145,35 @@ function rice_decode(br::BitReader,k::Int)
 end
 
 # -------------------------
-# Hybrid shift selection
+# Bit cost estimation
 # -------------------------
-function select_shift(res::Vector{Int32})
-    best_shift=0
-    best_score=typemax(Int)
+function estimate_bits(x::Int32, k::Int)
+    u = abs(x)
+    q = u >> k
+    return q + 1 + k
+end
+
+function estimate_block_bits(res::Vector{Int32}, shift::Int)
+    total = 0
+    for x in res
+        q = x >> shift
+        c = x - (q << shift)
+        kq = clamp(fld(31 - leading_zeros(UInt32(max(abs(q),1))),2),0,15)
+        kc = clamp(fld(31 - leading_zeros(UInt32(max(abs(c),1))),2),0,15)
+        total += estimate_bits(q,kq)
+        total += estimate_bits(c,kc)
+    end
+    total
+end
+
+function select_shift(res::Vector{Int32}, target_bits::Float64)
+    best_shift = 0
+    best_diff = Inf
     for s in 0:7
-        score = sum(abs.(res .>> s))
-        if score < best_score
-            best_score = score
+        bits = estimate_block_bits(res,s)
+        diff = abs(bits - target_bits)
+        if diff < best_diff
+            best_diff = diff
             best_shift = s
         end
     end
@@ -173,7 +183,7 @@ end
 # -------------------------
 # Encoder
 # -------------------------
-function encode(X::Matrix{Int16}; blocksize::Int=BLOCKSIZE)
+function encode(X::Matrix{Int16}; blocksize::Int=BLOCKSIZE, target_bps::Float64=4.0)
     N,_ = size(X)
     lmsL,lmsR = LMS(),LMS()
     bw=BitWriter()
@@ -185,7 +195,6 @@ function encode(X::Matrix{Int16}; blocksize::Int=BLOCKSIZE)
         errL = Vector{Int32}(undef,Ns)
         errR = Vector{Int32}(undef,Ns)
 
-        # compute residuals
         for i in 1:Ns
             L=Int32(X[b+i-1,1])
             R=Int32(X[b+i-1,2])
@@ -196,22 +205,24 @@ function encode(X::Matrix{Int16}; blocksize::Int=BLOCKSIZE)
             lms_update!(lmsR,eR,R)
         end
 
-        shiftL = select_shift(errL)
-        shiftR = select_shift(errR)
+        target_bits = target_bps * Ns
 
-        write_bits!(bw,UInt32(shiftL),4)
-        write_bits!(bw,UInt32(shiftR),4)
+        shiftL = select_shift(errL, target_bits/2)
+        shiftR = select_shift(errR, target_bits/2)
 
-        # encode
+        write_bits!(bw,shiftL,4)
+        write_bits!(bw,shiftR,4)
+
         for i in 1:Ns
             for (err,shift) in ((errL[i],shiftL),(errR[i],shiftR))
-                q,c = split_residual(err,shift)
+                q = err >> shift
+                c = err - (q << shift)
 
                 kq=compute_rice_k(q)
                 kc=compute_rice_k(c)
 
-                write_bits!(bw,UInt32(kq),4)
-                write_bits!(bw,UInt32(kc),4)
+                write_bits!(bw,kq,4)
+                write_bits!(bw,kc,4)
 
                 rice_encode(bw,q,kq)
                 rice_encode(bw,c,kc)
@@ -224,7 +235,7 @@ function encode(X::Matrix{Int16}; blocksize::Int=BLOCKSIZE)
 end
 
 # -------------------------
-# Decoder
+# Decoder (unchanged)
 # -------------------------
 function decode(bs::Vector{UInt8}, N::Int; blocksize::Int=BLOCKSIZE)
     lmsL,lmsR=LMS(),LMS()
@@ -269,18 +280,15 @@ end
 # Test
 # -------------------------
 function test_codec()
-    println("Running V13 test...")
+    println("Running V14 test...")
     X = rand(Int16,5000,2)
-    bs = encode(X)
+    bs = encode(X; target_bps=4.0)
     Xrec = decode(bs,5000)
-    if X==Xrec
-        println("✅ Perfect reconstruction")
-    else
-        println("❌ Error")
-    end
+    println("Reconstruction: ", X==Xrec ? "✅ OK" : "❌ FAIL")
+    println("Compressed size: ", length(bs), " bytes")
 end
 
 end
 
-using .WavPackHybridFinalToyV13
-WavPackHybridFinalToyV13.test_codec()
+using .WavPackHybridFinalToyV14
+WavPackHybridFinalToyV14.test_codec()
