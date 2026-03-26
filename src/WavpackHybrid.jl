@@ -1,7 +1,7 @@
 module WavPackHybrid
 
 include("SoundCore.jl")
-using BitIntegers  # For Int24
+using BitIntegers
 export encode, decode, test_codec
 
 # -------------------------
@@ -95,6 +95,8 @@ end
 function flush_bits!(bw::BitWriter)
     if bw.bits_filled>0
         push!(bw.data,bw.buffer)
+        bw.buffer=0
+        bw.bits_filled=0
     end
 end
 
@@ -175,13 +177,13 @@ end
 function encode(X::AbstractVector{Stereo{T}}) where T<:Integer
     N = length(X)
     lmsL,lmsR=LMS(),LMS()
-    shapeL,shapeR = Int32(0),Int32(0)
     bwL,bwC = BitWriter(),BitWriter()
 
     for b in 1:BLOCKSIZE:N
         bend=min(b+BLOCKSIZE-1,N)
         Ns=bend-b+1
         errL,errR = Int32[],Int32[]
+        shapeL,shapeR = Int32(0),Int32(0)   # Reset shape per block
 
         for i in 1:Ns
             L,R = Int32(X[b+i-1].l), Int32(X[b+i-1].r)
@@ -192,7 +194,6 @@ function encode(X::AbstractVector{Stereo{T}}) where T<:Integer
         end
 
         mid,side = mid_side(errL,errR)
-        mid,side = Int32.(mid), Int32.(side)
         use_ms = estimate_bits(mid,2)+estimate_bits(side,2) < estimate_bits(errL,2)+estimate_bits(errR,2)
         write_bits!(bwL,use_ms,1)
 
@@ -228,15 +229,15 @@ end
 function decode(bsL, bsC, N::Int, ::Type{T}) where T<:Integer
     clamp_fn = x->clamp_sample(x,T)
     lmsL,lmsR = LMS(), LMS()
-    shapeL,shapeR = Int32(0),Int32(0)
-    brL,brC = BitReader(bsL), BitReader(bsC)
     Xrec = Vector{Stereo{T}}(undef, N)
     pos=1
+    brL,brC = BitReader(bsL), BitReader(bsC)
 
     while pos <= N
         use_ms = read_bits!(brL,1)!=0
         shiftA,shiftB = Int(read_bits!(brL,4)), Int(read_bits!(brL,4))
         Ns = min(BLOCKSIZE, N-pos+1)
+        shapeL,shapeR = Int32(0),Int32(0)  # Reset per block
 
         for _ in 1:Ns
             vals=Int32[]
@@ -256,8 +257,8 @@ function decode(bsL, bsC, N::Int, ::Type{T}) where T<:Integer
 
             if use_ms
                 mid,side = vals[1], vals[2]
-                vals[1] = mid + (side>>1)
-                vals[2] = mid - (side - (side>>1))
+                vals[1] = mid + ((side + (side & 1)) >> 1)  # L
+                vals[2] = vals[1] - side                     # R
             end
 
             resL,resR = vals[1], vals[2]
@@ -280,12 +281,15 @@ end
 function test_codec()
     println("Running SoundCore hybrid test...")
 
+    # 16-bit test
     X16 = [Stereo{Int16}(rand(Int16), rand(Int16)) for _ in 1:5000]
     wv16,wvc16 = encode(X16)
     Xrec16 = decode(wv16,wvc16,5000, Int16)
     println("16-bit:", all(((a,b),)->a==b, zip(X16,Xrec16)) ? "✅" : "❌")
 
-    X24 = [Stereo{Int24}(Int24(rand(-8_388_608:8_388_607)), Int24(rand(-8_388_608:8_388_607))) for _ in 1:5000]
+    # 24-bit test
+    X24 = [Stereo{Int24}(Int24(rand(UInt32(0):UInt32(16_777_215))-8_388_608),
+                        Int24(rand(UInt32(0):UInt32(16_777_215))-8_388_608)) for _ in 1:5000]
     wv24,wvc24 = encode(X24)
     Xrec24 = decode(wv24,wvc24,5000, Int24)
     println("24-bit Int24:", all(((a,b),)->a==b, zip(X24,Xrec24)) ? "✅" : "❌")
