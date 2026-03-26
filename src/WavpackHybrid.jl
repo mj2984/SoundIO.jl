@@ -275,3 +275,34 @@ end
 
 using .WavPackHybridFinalToy
 WavPackHybridFinalToy.test_codec()
+#=
+Future Steps for WavPackToy / Hybrid
+1. Block-wise Hybrid / Adaptive Bitrate
+Implement block-wise analysis (e.g., 512–2048 samples per block).
+Measure residual entropy per block.
+Select shift / quantization per channel per block to hit a target bits per sample.
+Store shift/quantization in the block header for decoder.
+2. Noise Shaping
+Introduce adaptive noise shaping: residuals shaped according to LMS + perceptual importance.
+Integrate shaping into encoder and update decoder accordingly.
+3. Joint Stereo / Mid-Side
+Implement block-wise joint stereo decision:
+Compare normal stereo residual vs mid-side residual.
+Pick the one with lower entropy.
+Store a joint-stereo flag per block in the bitstream.
+4. Correction Stream for True Hybrid
+Split lossy vs correction stream for perfect reconstruction:
+Encode lossy residuals first.
+Correction residuals store the difference to ensure lossless recovery.
+5. Closer to WavPack LMS
+Refine LMS to match actual WavPack behavior:
+Update history with samples, not residuals.
+Adjust delta tables (UPDATE_TABLE) and shift tables (HYBRID_SHIFT_TABLE) to match reference.
+Modify tap selection / number of taps and weight update law for more accurate prediction.
+6. Performance & Bitstream Optimizations
+Optimize Rice coding, unary encoding, and bitstream packing.
+Optionally implement multi-block buffering for speed.
+7. Testing & Validation
+Add unit tests with multiple random stereo signals.
+Compare results to real WavPack outputs for verification.
+=#
