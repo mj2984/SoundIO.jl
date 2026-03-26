@@ -1,4 +1,4 @@
-module WavPackHybridSoundCore25
+module WavPackHybridSoundCore24
 
 include("SoundCore.jl")  # Ensure Int24 is defined
 using BitIntegers
