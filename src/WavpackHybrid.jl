@@ -1,6 +1,6 @@
-module WavPackToy
+module WavPackHybridNoiseToy
 
-export encode, decode, test_codec
+export hybrid_encode, hybrid_decode, test_hybrid_noise_codec
 
 # -------------------------
 # Constants
@@ -8,8 +8,6 @@ export encode, decode, test_codec
 const MAX_TAPS = 8
 const WEIGHT_SHIFT = 10
 const UPDATE_TABLE = Int32[0,1,2,2,3,3,4,4,5,6,7,8,9,10,12,14]
-
-# Hybrid shift table
 const HYBRID_SHIFT_TABLE = [0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7]
 
 # -------------------------
@@ -19,9 +17,7 @@ mutable struct LMS
     weights::Vector{Int32}
     history::Vector{Int32}
 end
-function LMS()
-    LMS(zeros(Int32, MAX_TAPS), zeros(Int32, MAX_TAPS))
-end
+LMS() = LMS(zeros(Int32, MAX_TAPS), zeros(Int32, MAX_TAPS))
 
 @inline function clamp16(x::Int32)
     return Int16(clamp(x, typemin(Int16), typemax(Int16)))
@@ -86,7 +82,7 @@ mutable struct BitWriter
     buffer::UInt8
     bits_filled::Int
 end
-function BitWriter() BitWriter(UInt8[],0x00,0) end
+BitWriter() = BitWriter(UInt8[],0x00,0)
 
 function write_bits!(bw::BitWriter, value::UInt32, nbits::Int)
     while nbits>0
@@ -133,7 +129,7 @@ mutable struct BitReader
     buffer::UInt8
     bits_left::Int
 end
-function BitReader(data::Vector{UInt8}) BitReader(data,1,0x00,0) end
+BitReader(data::Vector{UInt8}) = BitReader(data,1,0x00,0)
 
 function read_bits!(br::BitReader, nbits::Int)
     result = UInt32(0)
@@ -169,112 +165,121 @@ function rice_decode(br::BitReader,k::Int)
 end
 
 # -------------------------
-# Encoder with Joint Stereo
+# Noise Shaper
 # -------------------------
-function encode(X::Matrix{Int16})
+mutable struct Shaper
+    feedback::Int32
+end
+Shaper() = Shaper(0)
+
+# -------------------------
+# Hybrid Lossless + Noise Shaping Encoder
+# -------------------------
+function hybrid_encode(X::Matrix{Int16})
     N,C = size(X)
     @assert C==2 "Only stereo supported"
     lms = [LMS(),LMS()]
-    bw = BitWriter()
+    shapers = [Shaper(),Shaper()]
+    lossy_bw = BitWriter()
+    corr_bw  = BitWriter()
 
     for n in 1:N
         L = Int32(X[n,1])
         R = Int32(X[n,2])
 
-        # --- Compute residuals for normal stereo ---
-        predL = lms_predict(lms[1])
-        predR = lms_predict(lms[2])
-        errL = L - predL
-        errR = R - predR
-        shiftL = compute_shift(errL)
-        shiftR = compute_shift(errR)
-        qL,cL = split_residual(errL,shiftL)
-        qR,cR = split_residual(errR,shiftR)
-        sum_normal = abs(qL)+abs(cL)+abs(qR)+abs(cR)
-
-        # --- Compute residuals for joint stereo ---
-        mid = L - (R>>1)
+        # Joint stereo
+        mid  = L - (R >> 1)
         side = R
+
         predM = lms_predict(lms[1])
         predS = lms_predict(lms[2])
         errM = mid - predM
         errS = side - predS
-        shiftM = compute_shift(errM)
-        shiftS = compute_shift(errS)
-        qM,cM = split_residual(errM,shiftM)
-        qS,cS = split_residual(errS,shiftS)
-        sum_joint = abs(qM)+abs(cM)+abs(qS)+abs(cS)
 
-        # --- Choose best ---
-        use_joint = sum_joint < sum_normal ? 1 : 0
-        write_bits!(bw,UInt32(use_joint),1)
+        # --- Noise shaping feedback ---
+        shapedM = errM + (shapers[1].feedback >> 3)
+        shapedS = errS + (shapers[2].feedback >> 3)
 
-        if use_joint==1
-            # Joint stereo
-            channels = [(qM,cM,shiftM,lms[1]), (qS,cS,shiftS,lms[2])]
-        else
-            # Normal stereo
-            channels = [(qL,cL,shiftL,lms[1]), (qR,cR,shiftR,lms[2])]
-        end
+        shiftM = compute_shift(shapedM)
+        shiftS = compute_shift(shapedS)
+        qM,cM = split_residual(shapedM,shiftM)
+        qS,cS = split_residual(shapedS,shiftS)
 
-        for (q,c,shift,s) in channels
-            write_bits!(bw,UInt32(shift),4)
-            kq = compute_rice_k(q)
-            kc = compute_rice_k(c)
-            write_bits!(bw,UInt32(kq),4)
-            write_bits!(bw,UInt32(kc),4)
-            rice_encode(bw,q,kq)
-            rice_encode(bw,c,kc)
-            recon_err = (q<<shift)+c
-            lms_update!(s,recon_err)
-            s.history[1] += recon_err
-        end
+        # Update feedback for shaping
+        shapers[1].feedback = shapedM - ((qM<<shiftM)+cM)
+        shapers[2].feedback = shapedS - ((qS<<shiftS)+cS)
+
+        # --- Write lossy stream (q only) ---
+        write_bits!(lossy_bw,UInt32(shiftM),4)
+        write_bits!(lossy_bw,UInt32(shiftS),4)
+        kM = compute_rice_k(qM)
+        kS = compute_rice_k(qS)
+        write_bits!(lossy_bw,UInt32(kM),4)
+        write_bits!(lossy_bw,UInt32(kS),4)
+        rice_encode(lossy_bw,qM,kM)
+        rice_encode(lossy_bw,qS,kS)
+
+        # --- Write correction stream (c only) ---
+        write_bits!(corr_bw,UInt32(shiftM),4)
+        write_bits!(corr_bw,UInt32(shiftS),4)
+        kMc = compute_rice_k(cM)
+        kSc = compute_rice_k(cS)
+        write_bits!(corr_bw,UInt32(kMc),4)
+        write_bits!(corr_bw,UInt32(kSc),4)
+        rice_encode(corr_bw,cM,kMc)
+        rice_encode(corr_bw,cS,kSc)
+
+        # Update LMS with full original residuals
+        lms_update!(lms[1], errM)
+        lms_update!(lms[2], errS)
+        lms[1].history[1] += errM
+        lms[2].history[1] += errS
     end
-    flush_bits!(bw)
-    return bw.data
+
+    flush_bits!(lossy_bw)
+    flush_bits!(corr_bw)
+    return lossy_bw.data, corr_bw.data
 end
 
 # -------------------------
-# Decoder with Joint Stereo
+# Hybrid Lossless + Noise Shaping Decoder
 # -------------------------
-function decode(bs::Vector{UInt8},N::Int)
-    C=2
-    lms=[LMS(),LMS()]
-    br = BitReader(bs)
-    Xrec = zeros(Int16,N,C)
+function hybrid_decode(lossy::Vector{UInt8}, corr::Vector{UInt8}, N::Int)
+    lms = [LMS(),LMS()]
+    lossy_br = BitReader(lossy)
+    corr_br  = BitReader(corr)
+    Xrec = zeros(Int16,N,2)
 
     for n in 1:N
-        # Read joint stereo flag
-        use_joint = read_bits!(br,1)
-        decoded = zeros(Int32,2)
+        shiftM = Int(read_bits!(lossy_br,4))
+        shiftS = Int(read_bits!(lossy_br,4))
+        kM = Int(read_bits!(lossy_br,4))
+        kS = Int(read_bits!(lossy_br,4))
+        qM = rice_decode(lossy_br,kM)
+        qS = rice_decode(lossy_br,kS)
 
-        for ch in 1:2
-            s=lms[ch]
-            shift = Int(read_bits!(br,4))
-            kq    = Int(read_bits!(br,4))
-            kc    = Int(read_bits!(br,4))
-            q = rice_decode(br,kq)
-            c = rice_decode(br,kc)
-            err = (q<<shift)+c
-            sample = lms_predict(s)+err
-            decoded[ch]=sample
-            lms_update!(s,err)
-            s.history[1] += err
-        end
+        shiftMc = Int(read_bits!(corr_br,4))
+        shiftSc = Int(read_bits!(corr_br,4))
+        kMc = Int(read_bits!(corr_br,4))
+        kSc = Int(read_bits!(corr_br,4))
+        cM = rice_decode(corr_br,kMc)
+        cS = rice_decode(corr_br,kSc)
 
-        if use_joint==1
-            # decode joint stereo
-            mid = decoded[1]
-            side = decoded[2]
-            L = mid + (side>>1)
-            R = side
-        else
-            # normal stereo
-            L = decoded[1]
-            R = decoded[2]
-        end
+        errM = (qM << shiftM) + cM
+        errS = (qS << shiftS) + cS
+
+        mid  = lms_predict(lms[1]) + errM
+        side = lms_predict(lms[2]) + errS
+        L = mid + (side >> 1)
+        R = side
+
         Xrec[n,1] = clamp16(L)
         Xrec[n,2] = clamp16(R)
+
+        lms_update!(lms[1], errM)
+        lms_update!(lms[2], errS)
+        lms[1].history[1] += errM
+        lms[2].history[1] += errS
     end
     return Xrec
 end
@@ -282,11 +287,11 @@ end
 # -------------------------
 # Test
 # -------------------------
-function test_codec()
-    println("Running WavPackToy Joint Stereo test...")
+function test_hybrid_noise_codec()
+    println("Running WavPackHybridNoiseToy test...")
     X = rand(Int16,5000,2)
-    bs = encode(X)
-    Xrec = decode(bs,5000)
+    lossy, corr = hybrid_encode(X)
+    Xrec = hybrid_decode(lossy,corr,5000)
     if X==Xrec
         println("✅ Perfect reconstruction")
     else
@@ -297,6 +302,8 @@ end
 
 end
 
-using .WavPackToy
-
-WavPackToy.test_codec()
+# -------------------------
+# Run test
+# -------------------------
+using .WavPackHybridNoiseToy
+WavPackHybridNoiseToy.test_hybrid_noise_codec()
