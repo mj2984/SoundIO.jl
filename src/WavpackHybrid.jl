@@ -1,4 +1,4 @@
-module WavPackHybridFinalToyV6
+module WavPackHybridFinalToyV7
 
 export encode, decode, test_codec
 
@@ -59,11 +59,6 @@ end
 # -------------------------
 # Residual splitting
 # -------------------------
-function compute_shift(err::Int32)
-    idx = min(abs(err),15)+1
-    return HYBRID_SHIFT_TABLE[idx]
-end
-
 function split_residual(err::Int32, shift::Int)
     q = err >> shift
     recon = q << shift
@@ -167,6 +162,22 @@ function rice_decode(br::BitReader,k::Int)
 end
 
 # -------------------------
+# Adaptive shift selection
+# -------------------------
+function select_block_shift(residuals::Vector{Int32})
+    best_shift = 0
+    best_score = typemax(Int)
+    for shift in 0:7
+        score = sum(abs.(residuals .>> shift))
+        if score < best_score
+            best_score = score
+            best_shift = shift
+        end
+    end
+    return best_shift
+end
+
+# -------------------------
 # Encoder
 # -------------------------
 function encode(X::Matrix{Int16}; blocksize::Int=BLOCKSIZE)
@@ -217,12 +228,16 @@ function encode(X::Matrix{Int16}; blocksize::Int=BLOCKSIZE)
         write_bits!(bw,UInt32(joint_stereo),1)
         dataToEncode = joint_stereo ? errMS : errLR
         
+        # block-wise adaptive shifts
+        shiftA = select_block_shift(dataToEncode[:,1])
+        shiftB = select_block_shift(dataToEncode[:,2])
+        write_bits!(bw,UInt32(shiftA),4)
+        write_bits!(bw,UInt32(shiftB),4)
+        
         # encode residuals
         for n in 1:Ns
             eA = dataToEncode[n,1]
             eB = dataToEncode[n,2]
-            shiftA = compute_shift(eA)
-            shiftB = compute_shift(eB)
             qA,cA = split_residual(eA, shiftA)
             qB,cB = split_residual(eB, shiftB)
             kqA = compute_rice_k(qA)
@@ -230,10 +245,8 @@ function encode(X::Matrix{Int16}; blocksize::Int=BLOCKSIZE)
             kqB = compute_rice_k(qB)
             kcB = compute_rice_k(cB)
             
-            write_bits!(bw,UInt32(shiftA),4)
             write_bits!(bw,UInt32(kqA),4)
             write_bits!(bw,UInt32(kcA),4)
-            write_bits!(bw,UInt32(shiftB),4)
             write_bits!(bw,UInt32(kqB),4)
             write_bits!(bw,UInt32(kcB),4)
             
@@ -250,11 +263,11 @@ function encode(X::Matrix{Int16}; blocksize::Int=BLOCKSIZE)
             if joint_stereo
                 M = L + R
                 S = L - R
-                lms_update!(lmsL, errMS[n,1], M)
-                lms_update!(lmsR, errMS[n,2], S)
+                lms_update!(lmsL, dataToEncode[n,1], M)
+                lms_update!(lmsR, dataToEncode[n,2], S)
             else
-                lms_update!(lmsL, errLR[n,1], L)
-                lms_update!(lmsR, errLR[n,2], R)
+                lms_update!(lmsL, dataToEncode[n,1], L)
+                lms_update!(lmsR, dataToEncode[n,2], R)
             end
         end
     end
@@ -276,14 +289,14 @@ function decode(bs::Vector{UInt8}, N::Int; blocksize::Int=BLOCKSIZE)
         bend = min(pos+blocksize-1,N)
         Ns = bend-pos+1
         joint_stereo = read_bits!(br,1)!=0
+        shiftA = Int(read_bits!(br,4))
+        shiftB = Int(read_bits!(br,4))
         
         for n in 1:Ns
-            shiftA = Int(read_bits!(br,4))
-            kqA    = Int(read_bits!(br,4))
-            kcA    = Int(read_bits!(br,4))
-            shiftB = Int(read_bits!(br,4))
-            kqB    = Int(read_bits!(br,4))
-            kcB    = Int(read_bits!(br,4))
+            kqA = Int(read_bits!(br,4))
+            kcA = Int(read_bits!(br,4))
+            kqB = Int(read_bits!(br,4))
+            kcB = Int(read_bits!(br,4))
             
             qA = rice_decode(br,kqA)
             cA = rice_decode(br,kcA)
@@ -322,7 +335,7 @@ end
 # Test
 # -------------------------
 function test_codec()
-    println("Running WavPackHybridFinalToyV6 test...")
+    println("Running WavPackHybridFinalToyV7 test...")
     X = rand(Int16,5000,2)
     bs = encode(X)
     Xrec = decode(bs,5000)
@@ -336,5 +349,5 @@ end
 
 end
 
-using .WavPackHybridFinalToyV6
-WavPackHybridFinalToyV6.test_codec()
+using .WavPackHybridFinalToyV7
+WavPackHybridFinalToyV7.test_codec()
