@@ -1,6 +1,9 @@
-module WavPackHybridFinalToyV19Fixed
+module WavPackHybridSoundCore24
+include("SoundCore.jl")  # Ensure Int24 is defined
 
-export encode, decode_lossless, test_codec
+using BitIntegers
+
+export encode_generic, decode_generic, test_codec_soundcore24
 
 # -------------------------
 # Constants
@@ -13,7 +16,10 @@ const BLOCKSIZE = 1024
 # -------------------------
 # Utils
 # -------------------------
-@inline clamp16(x::Int32) = Int16(clamp(x, typemin(Int16), typemax(Int16)))
+@inline clamp_sample(x::Int32, ::Type{T}) where T =
+    T === Int16 ? clamp(x, typemin(Int16), typemax(Int16)) :
+    T === Int24 ? clamp(x, -8_388_608, 8_388_607) :
+    x
 
 function compute_rice_k(x::Int32)
     mag = max(abs(x),1)
@@ -61,7 +67,7 @@ function lms_update!(s::LMS, err::Int32, sample::Int32)
 end
 
 # -------------------------
-# Bit IO
+# Bit IO and Rice coding (unchanged)
 # -------------------------
 mutable struct BitWriter
     data::Vector{UInt8}
@@ -147,7 +153,7 @@ function rice_decode(br,k)
 end
 
 # -------------------------
-# Mid/Side
+# Mid/Side & bit estimation
 # -------------------------
 function mid_side(L::Vector{Int32}, R::Vector{Int32})
     mid = (L .+ R) .>> 1
@@ -155,9 +161,6 @@ function mid_side(L::Vector{Int32}, R::Vector{Int32})
     return mid, side
 end
 
-# -------------------------
-# Bit estimation
-# -------------------------
 function estimate_bits(v::Vector{Int32}, shift)
     total=0
     for x in v
@@ -168,10 +171,10 @@ function estimate_bits(v::Vector{Int32}, shift)
 end
 
 # -------------------------
-# Encoder
+# Encode / Decode for Stereo{T<:Integer} including Int24
 # -------------------------
-function encode(X::Matrix{Int16}; target_bps=4.0)
-    N,_=size(X)
+function encode_generic(X::AbstractVector{Stereo{T}}) where T<:Integer
+    N = length(X)
 
     lmsL,lmsR=LMS(),LMS()
     shapeL=Int32(0)
@@ -188,8 +191,8 @@ function encode(X::Matrix{Int16}; target_bps=4.0)
         errR=Int32[]
 
         for i in 1:Ns
-            L=Int32(X[b+i-1,1])
-            R=Int32(X[b+i-1,2])
+            L=Int32(X[b+i-1].l)
+            R=Int32(X[b+i-1].r)
             eL=L-lms_predict(lmsL)
             eR=R-lms_predict(lmsR)
             push!(errL,eL); push!(errR,eR)
@@ -198,8 +201,7 @@ function encode(X::Matrix{Int16}; target_bps=4.0)
         end
 
         mid,side = mid_side(errL,errR)
-        use_ms = estimate_bits(mid,2)+estimate_bits(side,2) <
-                 estimate_bits(errL,2)+estimate_bits(errR,2)
+        use_ms = estimate_bits(mid,2)+estimate_bits(side,2) < estimate_bits(errL,2)+estimate_bits(errR,2)
 
         write_bits!(bwL,use_ms,1)
 
@@ -238,18 +240,17 @@ function encode(X::Matrix{Int16}; target_bps=4.0)
     return bwL.data, bwC.data
 end
 
-# -------------------------
-# Decoder (fixed)
-# -------------------------
-function decode_lossless(bsL, bsC, N)
-    lmsL, lmsR = LMS(), LMS()
+function decode_generic(bsL, bsC, N::Int, ::Type{T}) where T<:Integer
+    clamp_fn = x->clamp_sample(x,T)
+
+    lmsL,lmsR=LMS(),LMS()
     shapeL = Int32(0)
     shapeR = Int32(0)
 
     brL = BitReader(bsL)
     brC = BitReader(bsC)
 
-    Xrec = zeros(Int16, N, 2)
+    Xrec = Vector{Stereo{T}}(undef, N)
 
     pos = 1
     while pos <= N
@@ -290,11 +291,10 @@ function decode_lossless(bsL, bsC, N)
             L = lms_predict(lmsL) + resL
             R = lms_predict(lmsR) + resR
 
-            Xrec[pos, 1] = clamp16(L)
-            Xrec[pos, 2] = clamp16(R)
+            Xrec[pos] = Stereo{T}(clamp_sample(L,T), clamp_sample(R,T))
 
-            lms_update!(lmsL, resL, L)
-            lms_update!(lmsR, resR, R)
+            lms_update!(lmsL, resL, Int32(L))
+            lms_update!(lmsR, resR, Int32(R))
 
             pos += 1
         end
@@ -306,16 +306,23 @@ end
 # -------------------------
 # Test
 # -------------------------
-function test_codec()
-    println("Running V19Fixed test...")
-    X = rand(Int16,5000,2)
-    wv,wvc = encode(X)
-    Xrec = decode_lossless(wv,wvc,5000)
-    println(X==Xrec ? "✅ Perfect reconstruction" : "❌ Mismatch")
-    println("Sizes → lossy: $(length(wv))  correction: $(length(wvc))")
+function test_codec_soundcore24()
+    println("Running SoundCore Int24 hybrid test...")
+
+    # 16-bit test
+    X16 = [Stereo{Int16}(rand(Int16), rand(Int16)) for _ in 1:5000]
+    wv16,wvc16 = encode_generic(X16)
+    Xrec16 = decode_generic(wv16,wvc16,5000, Int16)
+    println("16-bit:", all(x->x[1]==x[1], zip(X16,Xrec16)) ? "✅" : "❌")
+
+    # 24-bit test using Int24
+    X24 = [Stereo{Int24}(Int24(rand(-8_388_608:8_388_607)), Int24(rand(-8_388_608:8_388_607))) for _ in 1:5000]
+    wv24,wvc24 = encode_generic(X24)
+    Xrec24 = decode_generic(wv24,wvc24,5000, Int24)
+    println("24-bit Int24:", all(x->x[1]==x[1], zip(X24,Xrec24)) ? "✅" : "❌")
 end
 
 end
 
-using .WavPackHybridFinalToyV19Fixed
-WavPackHybridFinalToyV19Fixed.test_codec()
+using .WavPackHybridSoundCore24
+WavPackHybridSoundCore24.test_codec_soundcore24()
