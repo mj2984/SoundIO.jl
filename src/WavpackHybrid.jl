@@ -1,6 +1,6 @@
 module WavPackHybridSoundCore24
-include("SoundCore.jl")  # Ensure Int24 is defined
 
+include("SoundCore.jl")  # Ensure Int24 is defined
 using BitIntegers
 
 export encode_generic, decode_generic, test_codec_soundcore24
@@ -12,19 +12,6 @@ const MAX_TAPS = 8
 const WEIGHT_SHIFT = 10
 const UPDATE_TABLE = Int32[0,1,2,2,3,3,4,4,5,6,7,8,9,10,12,14]
 const BLOCKSIZE = 1024
-
-# -------------------------
-# Utils
-# -------------------------
-@inline clamp_sample(x::Int32, ::Type{T}) where T =
-    T === Int16 ? clamp(x, typemin(Int16), typemax(Int16)) :
-    T === Int24 ? clamp(x, -8_388_608, 8_388_607) :
-    x
-
-function compute_rice_k(x::Int32)
-    mag = max(abs(x),1)
-    clamp(fld(31 - leading_zeros(UInt32(mag)),2), 0, 15)
-end
 
 # -------------------------
 # LMS
@@ -67,7 +54,7 @@ function lms_update!(s::LMS, err::Int32, sample::Int32)
 end
 
 # -------------------------
-# Bit IO and Rice coding (unchanged)
+# Bit IO & Rice coding
 # -------------------------
 mutable struct BitWriter
     data::Vector{UInt8}
@@ -145,6 +132,11 @@ function read_unary!(br)
     c
 end
 
+function compute_rice_k(x::Int32)
+    mag = max(abs(x),1)
+    clamp(fld(31 - leading_zeros(UInt32(mag)),2), 0, 15)
+end
+
 function rice_decode(br,k)
     q=read_unary!(br)
     r=read_bits!(br,k)
@@ -171,7 +163,7 @@ function estimate_bits(v::Vector{Int32}, shift)
 end
 
 # -------------------------
-# Encode / Decode for Stereo{T<:Integer} including Int24
+# Encode / Decode generic Stereo{T<:Integer}
 # -------------------------
 function encode_generic(X::AbstractVector{Stereo{T}}) where T<:Integer
     N = length(X)
@@ -241,8 +233,6 @@ function encode_generic(X::AbstractVector{Stereo{T}}) where T<:Integer
 end
 
 function decode_generic(bsL, bsC, N::Int, ::Type{T}) where T<:Integer
-    clamp_fn = x->clamp_sample(x,T)
-
     lmsL,lmsR=LMS(),LMS()
     shapeL = Int32(0)
     shapeR = Int32(0)
@@ -251,8 +241,8 @@ function decode_generic(bsL, bsC, N::Int, ::Type{T}) where T<:Integer
     brC = BitReader(bsC)
 
     Xrec = Vector{Stereo{T}}(undef, N)
-
     pos = 1
+
     while pos <= N
         use_ms = read_bits!(brL, 1) != 0
         shiftA = Int(read_bits!(brL, 4))
@@ -280,10 +270,9 @@ function decode_generic(bsL, bsC, N::Int, ::Type{T}) where T<:Integer
             end
 
             if use_ms
-                mid = vals[1]
-                side = vals[2]
-                vals[1] = mid + (side >> 1)
-                vals[2] = mid - (side - (side >> 1))
+                mid, side = vals[1], vals[2]
+                vals[1] = mid + (side >> 1)   # L
+                vals[2] = mid - (side >> 1)   # R
             end
 
             resL, resR = vals[1], vals[2]
@@ -291,7 +280,7 @@ function decode_generic(bsL, bsC, N::Int, ::Type{T}) where T<:Integer
             L = lms_predict(lmsL) + resL
             R = lms_predict(lmsR) + resR
 
-            Xrec[pos] = Stereo{T}(clamp_sample(L,T), clamp_sample(R,T))
+            Xrec[pos] = Stereo{T}(L, R)
 
             lms_update!(lmsL, resL, Int32(L))
             lms_update!(lmsR, resR, Int32(R))
@@ -313,13 +302,13 @@ function test_codec_soundcore24()
     X16 = [Stereo{Int16}(rand(Int16), rand(Int16)) for _ in 1:5000]
     wv16,wvc16 = encode_generic(X16)
     Xrec16 = decode_generic(wv16,wvc16,5000, Int16)
-    println("16-bit:", all(x->x[1]==x[1], zip(X16,Xrec16)) ? "✅" : "❌")
+    println("16-bit:", all(((a,b),)->a==b, zip(X16,Xrec16)) ? "✅" : "❌")
 
     # 24-bit test using Int24
     X24 = [Stereo{Int24}(Int24(rand(-8_388_608:8_388_607)), Int24(rand(-8_388_608:8_388_607))) for _ in 1:5000]
     wv24,wvc24 = encode_generic(X24)
     Xrec24 = decode_generic(wv24,wvc24,5000, Int24)
-    println("24-bit Int24:", all(x->x[1]==x[1], zip(X24,Xrec24)) ? "✅" : "❌")
+    println("24-bit Int24:", all(((a,b),)->a==b, zip(X24,Xrec24)) ? "✅" : "❌")
 end
 
 end
