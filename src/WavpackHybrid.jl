@@ -1,4 +1,4 @@
-module WavPackHybridFinalToyV9
+module WavPackHybridFinalToyV13
 
 export encode, decode, test_codec
 
@@ -11,7 +11,7 @@ const UPDATE_TABLE = Int32[0,1,2,2,3,3,4,4,5,6,7,8,9,10,12,14]
 const BLOCKSIZE = 1024
 
 # -------------------------
-# LMS Predictor
+# LMS
 # -------------------------
 mutable struct LMS
     weights::Vector{Int32}
@@ -19,9 +19,7 @@ mutable struct LMS
 end
 LMS() = LMS(zeros(Int32, MAX_TAPS), zeros(Int32, MAX_TAPS))
 
-@inline function clamp16(x::Int32)
-    return Int16(clamp(x, typemin(Int16), typemax(Int16)))
-end
+@inline clamp16(x::Int32) = Int16(clamp(x, typemin(Int16), typemax(Int16)))
 
 @inline function get_delta(sample::Int32)
     mag = abs(sample)
@@ -34,7 +32,7 @@ function lms_predict(s::LMS)
     @inbounds for i in 1:MAX_TAPS
         acc += (s.weights[i] * s.history[i]) >> WEIGHT_SHIFT
     end
-    return acc
+    acc
 end
 
 function lms_update!(s::LMS, err::Int32, sample::Int32)
@@ -56,22 +54,21 @@ function lms_update!(s::LMS, err::Int32, sample::Int32)
 end
 
 # -------------------------
-# Residual splitting
+# Rice Coding
 # -------------------------
-function split_residual(err::Int32, shift::Int)
-    q = err >> shift
-    recon = q << shift
-    c = err - recon
-    return Int32(q), Int32(c)
-end
-
 function compute_rice_k(x::Int32)
     mag = max(abs(x),1)
     return clamp(fld(31 - leading_zeros(UInt32(mag)),2), 0, 15)
 end
 
+function split_residual(err::Int32, shift::Int)
+    q = err >> shift
+    c = err - (q << shift)
+    return q, c
+end
+
 # -------------------------
-# BitWriter / BitReader
+# Bit IO
 # -------------------------
 mutable struct BitWriter
     data::Vector{UInt8}
@@ -80,12 +77,13 @@ mutable struct BitWriter
 end
 BitWriter() = BitWriter(UInt8[],0x00,0)
 
-function write_bits!(bw::BitWriter, value::UInt32, nbits::Int)
+function write_bits!(bw::BitWriter, value::Integer, nbits::Int)
+    v = UInt32(value)
     while nbits>0
         space = 8 - bw.bits_filled
         take = min(space, nbits)
         mask = (1 << take) - 1
-        bw.buffer |= UInt8(((value >> (nbits - take)) & mask) << (space - take))
+        bw.buffer |= UInt8(((v >> (nbits - take)) & mask) << (space - take))
         bw.bits_filled += take
         nbits -= take
         if bw.bits_filled == 8
@@ -99,16 +97,14 @@ end
 function flush_bits!(bw::BitWriter)
     if bw.bits_filled>0
         push!(bw.data,bw.buffer)
-        bw.buffer=0x00
-        bw.bits_filled=0
     end
 end
 
 function write_unary!(bw::BitWriter,value::Int)
     for _ in 1:value
-        write_bits!(bw,UInt32(1),1)
+        write_bits!(bw,1,1)
     end
-    write_bits!(bw,UInt32(0),1)
+    write_bits!(bw,0,1)
 end
 
 function rice_encode(bw::BitWriter,x::Int32,k::Int)
@@ -116,7 +112,7 @@ function rice_encode(bw::BitWriter,x::Int32,k::Int)
     q = u >> k
     r = u & ((1<<k)-1)
     write_unary!(bw,Int(q))
-    write_bits!(bw,UInt32(r),k)
+    write_bits!(bw,r,k)
 end
 
 mutable struct BitReader
@@ -125,131 +121,104 @@ mutable struct BitReader
     buffer::UInt8
     bits_left::Int
 end
-BitReader(data::Vector{UInt8}) = BitReader(data,1,0x00,0)
+BitReader(d) = BitReader(d,1,0x00,0)
 
 function read_bits!(br::BitReader, nbits::Int)
     result = UInt32(0)
     while nbits>0
         if br.bits_left==0
-            br.buffer = br.data[br.pos]
-            br.pos += 1
-            br.bits_left=8
+            br.buffer = br.data[br.pos]; br.pos+=1; br.bits_left=8
         end
-        take = min(nbits,br.bits_left)
+        take=min(nbits,br.bits_left)
         result <<= take
         shift = br.bits_left - take
         result |= UInt32((br.buffer >> shift) & ((1<<take)-1))
         br.bits_left -= take
         nbits -= take
     end
-    return result
+    result
 end
 
 function read_unary!(br::BitReader)
-    count=0
+    c=0
     while read_bits!(br,1)!=0
-        count+=1
+        c+=1
     end
-    return count
+    c
 end
 
 function rice_decode(br::BitReader,k::Int)
     q=read_unary!(br)
     r=read_bits!(br,k)
     u=(q<<k)|r
-    return Int32((u&1)!=0 ? -((u+1)>>1) : (u>>1))
+    Int32((u&1)!=0 ? -((u+1)>>1) : (u>>1))
 end
 
 # -------------------------
-# Adaptive shift selection
+# Hybrid shift selection
 # -------------------------
-function select_block_shift(residuals::Vector{Int32})
-    best_shift = 0
-    best_score = typemax(Int)
-    for shift in 0:7
-        score = sum(abs.(residuals .>> shift))
+function select_shift(res::Vector{Int32})
+    best_shift=0
+    best_score=typemax(Int)
+    for s in 0:7
+        score = sum(abs.(res .>> s))
         if score < best_score
             best_score = score
-            best_shift = shift
+            best_shift = s
         end
     end
-    return best_shift
+    best_shift
 end
 
 # -------------------------
 # Encoder
 # -------------------------
-function encode(X::Matrix{Int16}; blocksize::Int=BLOCKSIZE, scale_factor::Float64=1.0, alpha::Float64=0.5)
-    N,C = size(X)
-    @assert C==2 "Only stereo supported"
-    lmsL, lmsR = LMS(), LMS()
-    bw = BitWriter()
-    
-    for bstart in 1:blocksize:N
-        bend = min(bstart+blocksize-1,N)
-        block = X[bstart:bend,:]
-        Ns = size(block,1)
-        err_block = zeros(Int32,Ns,2)
-        
+function encode(X::Matrix{Int16}; blocksize::Int=BLOCKSIZE)
+    N,_ = size(X)
+    lmsL,lmsR = LMS(),LMS()
+    bw=BitWriter()
+
+    for b in 1:blocksize:N
+        bend=min(b+blocksize-1,N)
+        Ns=bend-b+1
+
+        errL = Vector{Int32}(undef,Ns)
+        errR = Vector{Int32}(undef,Ns)
+
         # compute residuals
-        for n in 1:Ns
-            L = Int32(block[n,1])
-            R = Int32(block[n,2])
-            predL = lms_predict(lmsL)
-            predR = lms_predict(lmsR)
-            errL = L - predL
-            errR = R - predR
-            err_block[n,1] = errL
-            err_block[n,2] = errR
-            lms_update!(lmsL, errL, L)
-            lms_update!(lmsR, errR, R)
+        for i in 1:Ns
+            L=Int32(X[b+i-1,1])
+            R=Int32(X[b+i-1,2])
+            eL = L - lms_predict(lmsL)
+            eR = R - lms_predict(lmsR)
+            errL[i]=eL; errR[i]=eR
+            lms_update!(lmsL,eL,L)
+            lms_update!(lmsR,eR,R)
         end
-        
-        # -------------------------
-        # Noise shaping applied to lossy residuals
-        # -------------------------
-        lossy_block = round.(Int32, err_block ./ scale_factor)
-        for ch in 1:2
-            prev_error = Int32(0)
-            for n in 1:Ns
-                shaped = lossy_block[n,ch] + Int32(round(alpha * prev_error))
-                prev_error = shaped - lossy_block[n,ch]
-                lossy_block[n,ch] = shaped
-            end
-        end
-        
-        correction_block = err_block - lossy_block .* Int32(scale_factor)
-        
-        # adaptive block shifts
-        shiftA = select_block_shift(lossy_block[:,1])
-        shiftB = select_block_shift(lossy_block[:,2])
-        write_bits!(bw,UInt32(shiftA),4)
-        write_bits!(bw,UInt32(shiftB),4)
-        
-        # encode lossy then correction
-        for n in 1:Ns
-            for ch in 1:2
-                # lossy residual
-                qL,cL = split_residual(lossy_block[n,ch], ch==1 ? shiftA : shiftB)
-                kq = compute_rice_k(qL)
-                kc = compute_rice_k(cL)
+
+        shiftL = select_shift(errL)
+        shiftR = select_shift(errR)
+
+        write_bits!(bw,UInt32(shiftL),4)
+        write_bits!(bw,UInt32(shiftR),4)
+
+        # encode
+        for i in 1:Ns
+            for (err,shift) in ((errL[i],shiftL),(errR[i],shiftR))
+                q,c = split_residual(err,shift)
+
+                kq=compute_rice_k(q)
+                kc=compute_rice_k(c)
+
                 write_bits!(bw,UInt32(kq),4)
                 write_bits!(bw,UInt32(kc),4)
-                rice_encode(bw,qL,kq)
-                rice_encode(bw,cL,kc)
-                
-                # correction residual
-                qC,cC = split_residual(correction_block[n,ch], ch==1 ? shiftA : shiftB)
-                kqC = compute_rice_k(qC)
-                kcC = compute_rice_k(cC)
-                write_bits!(bw,UInt32(kqC),4)
-                write_bits!(bw,UInt32(kcC),4)
-                rice_encode(bw,qC,kqC)
-                rice_encode(bw,cC,kcC)
+
+                rice_encode(bw,q,kq)
+                rice_encode(bw,c,kc)
             end
         end
     end
-    
+
     flush_bits!(bw)
     return bw.data
 end
@@ -257,68 +226,61 @@ end
 # -------------------------
 # Decoder
 # -------------------------
-function decode(bs::Vector{UInt8}, N::Int; blocksize::Int=BLOCKSIZE, scale_factor::Float64=1.0)
-    lmsL, lmsR = LMS(), LMS()
-    br = BitReader(bs)
-    Xrec = zeros(Int16,N,2)
-    pos = 1
-    
-    while pos <= N
-        bend = min(pos+blocksize-1,N)
-        Ns = bend-pos+1
-        shiftA = Int(read_bits!(br,4))
-        shiftB = Int(read_bits!(br,4))
-        
-        for n in 1:Ns
-            lossy = zeros(Int32,2)
-            correction = zeros(Int32,2)
-            for ch in 1:2
-                kq = Int(read_bits!(br,4))
-                kc = Int(read_bits!(br,4))
-                q = rice_decode(br,kq)
-                c = rice_decode(br,kc)
-                lossy[ch] = (q << (ch==1 ? shiftA : shiftB)) + c
-                
-                kqC = Int(read_bits!(br,4))
-                kcC = Int(read_bits!(br,4))
-                qC = rice_decode(br,kqC)
-                cC = rice_decode(br,kcC)
-                correction[ch] = (qC << (ch==1 ? shiftA : shiftB)) + cC
+function decode(bs::Vector{UInt8}, N::Int; blocksize::Int=BLOCKSIZE)
+    lmsL,lmsR=LMS(),LMS()
+    br=BitReader(bs)
+    Xrec=zeros(Int16,N,2)
+
+    pos=1
+    while pos<=N
+        bend=min(pos+blocksize-1,N)
+        Ns=bend-pos+1
+
+        shiftL=Int(read_bits!(br,4))
+        shiftR=Int(read_bits!(br,4))
+
+        for i in 1:Ns
+            vals=Int32[]
+            for shift in (shiftL,shiftR)
+                kq=Int(read_bits!(br,4))
+                kc=Int(read_bits!(br,4))
+                q=rice_decode(br,kq)
+                c=rice_decode(br,kc)
+                push!(vals,(q<<shift)+c)
             end
-            
-            L32 = lms_predict(lmsL) + lossy[1]*Int32(scale_factor) + correction[1]
-            R32 = lms_predict(lmsR) + lossy[2]*Int32(scale_factor) + correction[2]
-            
-            Xrec[pos,1] = clamp16(L32)
-            Xrec[pos,2] = clamp16(R32)
-            
-            lms_update!(lmsL, lossy[1]*Int32(scale_factor)+correction[1], L32)
-            lms_update!(lmsR, lossy[2]*Int32(scale_factor)+correction[2], R32)
-            
-            pos += 1
+
+            L = lms_predict(lmsL)+vals[1]
+            R = lms_predict(lmsR)+vals[2]
+
+            Xrec[pos,1]=clamp16(L)
+            Xrec[pos,2]=clamp16(R)
+
+            lms_update!(lmsL,vals[1],L)
+            lms_update!(lmsR,vals[2],R)
+
+            pos+=1
         end
     end
-    
-    return Xrec
+
+    Xrec
 end
 
 # -------------------------
 # Test
 # -------------------------
 function test_codec()
-    println("Running WavPackHybridFinalToyV9 test...")
+    println("Running V13 test...")
     X = rand(Int16,5000,2)
     bs = encode(X)
     Xrec = decode(bs,5000)
     if X==Xrec
         println("✅ Perfect reconstruction")
     else
-        diff = sum(abs.(Int32.(X)-Int32.(Xrec)))
-        println("❌ Mismatch, total error = $diff")
+        println("❌ Error")
     end
 end
 
 end
 
-using .WavPackHybridFinalToyV9
-WavPackHybridFinalToyV9.test_codec()
+using .WavPackHybridFinalToyV13
+WavPackHybridFinalToyV13.test_codec()
