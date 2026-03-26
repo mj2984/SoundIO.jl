@@ -1,4 +1,4 @@
-module WavPackHybridFinalToyV8
+module WavPackHybridFinalToyV9
 
 export encode, decode, test_codec
 
@@ -179,7 +179,7 @@ end
 # -------------------------
 # Encoder
 # -------------------------
-function encode(X::Matrix{Int16}; blocksize::Int=BLOCKSIZE, scale_factor::Float64=1.0)
+function encode(X::Matrix{Int16}; blocksize::Int=BLOCKSIZE, scale_factor::Float64=1.0, alpha::Float64=0.5)
     N,C = size(X)
     @assert C==2 "Only stereo supported"
     lmsL, lmsR = LMS(), LMS()
@@ -205,8 +205,19 @@ function encode(X::Matrix{Int16}; blocksize::Int=BLOCKSIZE, scale_factor::Float6
             lms_update!(lmsR, errR, R)
         end
         
-        # hybrid lossy + correction
+        # -------------------------
+        # Noise shaping applied to lossy residuals
+        # -------------------------
         lossy_block = round.(Int32, err_block ./ scale_factor)
+        for ch in 1:2
+            prev_error = Int32(0)
+            for n in 1:Ns
+                shaped = lossy_block[n,ch] + Int32(round(alpha * prev_error))
+                prev_error = shaped - lossy_block[n,ch]
+                lossy_block[n,ch] = shaped
+            end
+        end
+        
         correction_block = err_block - lossy_block .* Int32(scale_factor)
         
         # adaptive block shifts
@@ -295,7 +306,7 @@ end
 # Test
 # -------------------------
 function test_codec()
-    println("Running WavPackHybridFinalToyV8 test...")
+    println("Running WavPackHybridFinalToyV9 test...")
     X = rand(Int16,5000,2)
     bs = encode(X)
     Xrec = decode(bs,5000)
@@ -309,5 +320,5 @@ end
 
 end
 
-using .WavPackHybridFinalToyV8
-WavPackHybridFinalToyV8.test_codec()
+using .WavPackHybridFinalToyV9
+WavPackHybridFinalToyV9.test_codec()
