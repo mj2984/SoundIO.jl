@@ -1,4 +1,4 @@
-module WavPackHybridFinalToyV7
+module WavPackHybridFinalToyV8
 
 export encode, decode, test_codec
 
@@ -8,7 +8,6 @@ export encode, decode, test_codec
 const MAX_TAPS = 8
 const WEIGHT_SHIFT = 10
 const UPDATE_TABLE = Int32[0,1,2,2,3,3,4,4,5,6,7,8,9,10,12,14]
-const HYBRID_SHIFT_TABLE = [0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7]
 const BLOCKSIZE = 1024
 
 # -------------------------
@@ -180,7 +179,7 @@ end
 # -------------------------
 # Encoder
 # -------------------------
-function encode(X::Matrix{Int16}; blocksize::Int=BLOCKSIZE)
+function encode(X::Matrix{Int16}; blocksize::Int=BLOCKSIZE, scale_factor::Float64=1.0)
     N,C = size(X)
     @assert C==2 "Only stereo supported"
     lmsL, lmsR = LMS(), LMS()
@@ -190,84 +189,52 @@ function encode(X::Matrix{Int16}; blocksize::Int=BLOCKSIZE)
         bend = min(bstart+blocksize-1,N)
         block = X[bstart:bend,:]
         Ns = size(block,1)
+        err_block = zeros(Int32,Ns,2)
         
-        # temporary LMS for joint stereo
-        lmsLtmp, lmsRtmp = deepcopy(lmsL), deepcopy(lmsR)
-        lmsM, lmsS = LMS(), LMS()
-        errLR = zeros(Int32,Ns,2)
-        errMS = zeros(Int32,Ns,2)
-        sumLR = 0
-        sumMS = 0
-        
+        # compute residuals
         for n in 1:Ns
             L = Int32(block[n,1])
             R = Int32(block[n,2])
-            # normal stereo residuals
-            predL = lms_predict(lmsLtmp)
-            predR = lms_predict(lmsRtmp)
+            predL = lms_predict(lmsL)
+            predR = lms_predict(lmsR)
             errL = L - predL
             errR = R - predR
-            errLR[n,1] = errL
-            errLR[n,2] = errR
-            sumLR += abs(errL)+abs(errR)
-            lms_update!(lmsLtmp, errL, L)
-            lms_update!(lmsRtmp, errR, R)
-            # joint stereo residuals
-            M = L + R
-            S = L - R
-            predM = lms_predict(lmsM)
-            predS = lms_predict(lmsS)
-            errMS[n,1] = M - predM
-            errMS[n,2] = S - predS
-            sumMS += abs(errMS[n,1])+abs(errMS[n,2])
-            lms_update!(lmsM, errMS[n,1], M)
-            lms_update!(lmsS, errMS[n,2], S)
+            err_block[n,1] = errL
+            err_block[n,2] = errR
+            lms_update!(lmsL, errL, L)
+            lms_update!(lmsR, errR, R)
         end
         
-        joint_stereo = sumMS < sumLR
-        write_bits!(bw,UInt32(joint_stereo),1)
-        dataToEncode = joint_stereo ? errMS : errLR
+        # hybrid lossy + correction
+        lossy_block = round.(Int32, err_block ./ scale_factor)
+        correction_block = err_block - lossy_block .* Int32(scale_factor)
         
-        # block-wise adaptive shifts
-        shiftA = select_block_shift(dataToEncode[:,1])
-        shiftB = select_block_shift(dataToEncode[:,2])
+        # adaptive block shifts
+        shiftA = select_block_shift(lossy_block[:,1])
+        shiftB = select_block_shift(lossy_block[:,2])
         write_bits!(bw,UInt32(shiftA),4)
         write_bits!(bw,UInt32(shiftB),4)
         
-        # encode residuals
+        # encode lossy then correction
         for n in 1:Ns
-            eA = dataToEncode[n,1]
-            eB = dataToEncode[n,2]
-            qA,cA = split_residual(eA, shiftA)
-            qB,cB = split_residual(eB, shiftB)
-            kqA = compute_rice_k(qA)
-            kcA = compute_rice_k(cA)
-            kqB = compute_rice_k(qB)
-            kcB = compute_rice_k(cB)
-            
-            write_bits!(bw,UInt32(kqA),4)
-            write_bits!(bw,UInt32(kcA),4)
-            write_bits!(bw,UInt32(kqB),4)
-            write_bits!(bw,UInt32(kcB),4)
-            
-            rice_encode(bw,qA,kqA)
-            rice_encode(bw,cA,kcA)
-            rice_encode(bw,qB,kqB)
-            rice_encode(bw,cB,kcB)
-        end
-        
-        # update global LMS with reconstructed samples
-        for n in 1:Ns
-            L = Int32(block[n,1])
-            R = Int32(block[n,2])
-            if joint_stereo
-                M = L + R
-                S = L - R
-                lms_update!(lmsL, dataToEncode[n,1], M)
-                lms_update!(lmsR, dataToEncode[n,2], S)
-            else
-                lms_update!(lmsL, dataToEncode[n,1], L)
-                lms_update!(lmsR, dataToEncode[n,2], R)
+            for ch in 1:2
+                # lossy residual
+                qL,cL = split_residual(lossy_block[n,ch], ch==1 ? shiftA : shiftB)
+                kq = compute_rice_k(qL)
+                kc = compute_rice_k(cL)
+                write_bits!(bw,UInt32(kq),4)
+                write_bits!(bw,UInt32(kc),4)
+                rice_encode(bw,qL,kq)
+                rice_encode(bw,cL,kc)
+                
+                # correction residual
+                qC,cC = split_residual(correction_block[n,ch], ch==1 ? shiftA : shiftB)
+                kqC = compute_rice_k(qC)
+                kcC = compute_rice_k(cC)
+                write_bits!(bw,UInt32(kqC),4)
+                write_bits!(bw,UInt32(kcC),4)
+                rice_encode(bw,qC,kqC)
+                rice_encode(bw,cC,kcC)
             end
         end
     end
@@ -279,7 +246,7 @@ end
 # -------------------------
 # Decoder
 # -------------------------
-function decode(bs::Vector{UInt8}, N::Int; blocksize::Int=BLOCKSIZE)
+function decode(bs::Vector{UInt8}, N::Int; blocksize::Int=BLOCKSIZE, scale_factor::Float64=1.0)
     lmsL, lmsR = LMS(), LMS()
     br = BitReader(bs)
     Xrec = zeros(Int16,N,2)
@@ -288,41 +255,34 @@ function decode(bs::Vector{UInt8}, N::Int; blocksize::Int=BLOCKSIZE)
     while pos <= N
         bend = min(pos+blocksize-1,N)
         Ns = bend-pos+1
-        joint_stereo = read_bits!(br,1)!=0
         shiftA = Int(read_bits!(br,4))
         shiftB = Int(read_bits!(br,4))
         
         for n in 1:Ns
-            kqA = Int(read_bits!(br,4))
-            kcA = Int(read_bits!(br,4))
-            kqB = Int(read_bits!(br,4))
-            kcB = Int(read_bits!(br,4))
-            
-            qA = rice_decode(br,kqA)
-            cA = rice_decode(br,kcA)
-            qB = rice_decode(br,kqB)
-            cB = rice_decode(br,kcB)
-            
-            errA = (qA<<shiftA)+cA
-            errB = (qB<<shiftB)+cB
-            
-            if joint_stereo
-                M = lms_predict(lmsL) + errA
-                S = lms_predict(lmsR) + errB
-                L32 = (M + S) >> 1
-                R32 = L32 - S
-                Xrec[pos,1] = clamp16(L32)
-                Xrec[pos,2] = clamp16(R32)
-                lms_update!(lmsL, errA, M)
-                lms_update!(lmsR, errB, S)
-            else
-                L32 = lms_predict(lmsL) + errA
-                R32 = lms_predict(lmsR) + errB
-                Xrec[pos,1] = clamp16(L32)
-                Xrec[pos,2] = clamp16(R32)
-                lms_update!(lmsL, errA, L32)
-                lms_update!(lmsR, errB, R32)
+            lossy = zeros(Int32,2)
+            correction = zeros(Int32,2)
+            for ch in 1:2
+                kq = Int(read_bits!(br,4))
+                kc = Int(read_bits!(br,4))
+                q = rice_decode(br,kq)
+                c = rice_decode(br,kc)
+                lossy[ch] = (q << (ch==1 ? shiftA : shiftB)) + c
+                
+                kqC = Int(read_bits!(br,4))
+                kcC = Int(read_bits!(br,4))
+                qC = rice_decode(br,kqC)
+                cC = rice_decode(br,kcC)
+                correction[ch] = (qC << (ch==1 ? shiftA : shiftB)) + cC
             end
+            
+            L32 = lms_predict(lmsL) + lossy[1]*Int32(scale_factor) + correction[1]
+            R32 = lms_predict(lmsR) + lossy[2]*Int32(scale_factor) + correction[2]
+            
+            Xrec[pos,1] = clamp16(L32)
+            Xrec[pos,2] = clamp16(R32)
+            
+            lms_update!(lmsL, lossy[1]*Int32(scale_factor)+correction[1], L32)
+            lms_update!(lmsR, lossy[2]*Int32(scale_factor)+correction[2], R32)
             
             pos += 1
         end
@@ -335,7 +295,7 @@ end
 # Test
 # -------------------------
 function test_codec()
-    println("Running WavPackHybridFinalToyV7 test...")
+    println("Running WavPackHybridFinalToyV8 test...")
     X = rand(Int16,5000,2)
     bs = encode(X)
     Xrec = decode(bs,5000)
@@ -349,5 +309,5 @@ end
 
 end
 
-using .WavPackHybridFinalToyV7
-WavPackHybridFinalToyV7.test_codec()
+using .WavPackHybridFinalToyV8
+WavPackHybridFinalToyV8.test_codec()
