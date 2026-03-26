@@ -1,4 +1,4 @@
-module WavPackHybridSoundCore24
+module WavPackHybridSoundCore25
 
 include("SoundCore.jl")  # Ensure Int24 is defined
 using BitIntegers
@@ -12,6 +12,19 @@ const MAX_TAPS = 8
 const WEIGHT_SHIFT = 10
 const UPDATE_TABLE = Int32[0,1,2,2,3,3,4,4,5,6,7,8,9,10,12,14]
 const BLOCKSIZE = 1024
+
+# -------------------------
+# Utils
+# -------------------------
+@inline clamp_sample(x::Int32, ::Type{T}) where T =
+    T === Int16 ? clamp(x, typemin(Int16), typemax(Int16)) :
+    T === Int24 ? clamp(x, -8_388_608, 8_388_607) :
+    x
+
+function compute_rice_k(x::Int32)
+    mag = max(abs(x),1)
+    clamp(fld(31 - leading_zeros(UInt32(mag)),2), 0, 15)
+end
 
 # -------------------------
 # LMS
@@ -29,7 +42,7 @@ LMS() = LMS(zeros(Int32,MAX_TAPS), zeros(Int32,MAX_TAPS))
 end
 
 function lms_predict(s::LMS)
-    acc=Int32(0)
+    acc = Int32(0)
     @inbounds for i in 1:MAX_TAPS
         acc += (s.weights[i]*s.history[i]) >> WEIGHT_SHIFT
     end
@@ -37,24 +50,24 @@ function lms_predict(s::LMS)
 end
 
 function lms_update!(s::LMS, err::Int32, sample::Int32)
-    if err==0 return end
+    if err == 0 return end
     sign = err>0 ? 1 : -1
     @inbounds for i in 1:MAX_TAPS
-        h=s.history[i]
-        if h!=0
-            delta=get_delta(h)
-            s.weights[i]+= (h>0)==(sign>0) ? delta : -delta
-            s.weights[i]=clamp(s.weights[i],-2048,2048)
+        h = s.history[i]
+        if h != 0
+            delta = get_delta(h)
+            s.weights[i] += (h>0)==(sign>0) ? delta : -delta
+            s.weights[i] = clamp(s.weights[i], -2048, 2048)
         end
     end
     @inbounds for i in MAX_TAPS:-1:2
-        s.history[i]=s.history[i-1]
+        s.history[i] = s.history[i-1]
     end
-    s.history[1]=sample
+    s.history[1] = sample
 end
 
 # -------------------------
-# Bit IO & Rice coding
+# Bit IO and Rice coding
 # -------------------------
 mutable struct BitWriter
     data::Vector{UInt8}
@@ -64,40 +77,41 @@ end
 BitWriter() = BitWriter(UInt8[],0x00,0)
 
 function write_bits!(bw::BitWriter, value::Integer, nbits::Int)
-    v=UInt32(value)
+    v = UInt32(value)
     while nbits>0
-        space=8-bw.bits_filled
-        take=min(space,nbits)
-        mask=(1<<take)-1
+        space = 8 - bw.bits_filled
+        take = min(space, nbits)
+        mask = (1<<take)-1
         bw.buffer |= UInt8(((v>>(nbits-take))&mask)<<(space-take))
-        bw.bits_filled+=take
-        nbits-=take
-        if bw.bits_filled==8
-            push!(bw.data,bw.buffer)
-            bw.buffer=0x00
-            bw.bits_filled=0
+        bw.bits_filled += take
+        nbits -= take
+        if bw.bits_filled == 8
+            push!(bw.data, bw.buffer)
+            bw.buffer = 0x00
+            bw.bits_filled = 0
         end
     end
 end
 
 function flush_bits!(bw::BitWriter)
-    if bw.bits_filled>0
-        push!(bw.data,bw.buffer)
+    if bw.bits_filled > 0
+        push!(bw.data, bw.buffer)
     end
 end
 
-function write_unary!(bw,v)
+function write_unary!(bw, v)
     for _ in 1:v
-        write_bits!(bw,1,1)
+        write_bits!(bw, 1, 1)
     end
-    write_bits!(bw,0,1)
+    write_bits!(bw, 0, 1)
 end
 
-function rice_encode(bw,x::Int32,k)
-    u=UInt32(x<0 ? (-x<<1)-1 : x<<1)
-    q=u>>k; r=u&((1<<k)-1)
-    write_unary!(bw,Int(q))
-    write_bits!(bw,r,k)
+function rice_encode(bw, x::Int32, k)
+    u = UInt32(x<0 ? (-x<<1)-1 : x<<1)
+    q = u>>k
+    r = u & ((1<<k)-1)
+    write_unary!(bw, Int(q))
+    write_bits!(bw, r, k)
 end
 
 mutable struct BitReader
@@ -106,41 +120,36 @@ mutable struct BitReader
     buffer::UInt8
     bits_left::Int
 end
-BitReader(d)=BitReader(d,1,0x00,0)
+BitReader(d) = BitReader(d, 1, 0x00, 0)
 
-function read_bits!(br,n)
-    r=UInt32(0)
-    while n>0
-        if br.bits_left==0
-            br.buffer=br.data[br.pos]; br.pos+=1; br.bits_left=8
+function read_bits!(br, n)
+    r = UInt32(0)
+    while n > 0
+        if br.bits_left == 0
+            br.buffer = br.data[br.pos]; br.pos += 1; br.bits_left = 8
         end
-        take=min(n,br.bits_left)
+        take = min(n, br.bits_left)
         r <<= take
-        shift=br.bits_left-take
+        shift = br.bits_left - take
         r |= UInt32((br.buffer>>shift)&((1<<take)-1))
-        br.bits_left-=take
-        n-=take
+        br.bits_left -= take
+        n -= take
     end
     r
 end
 
 function read_unary!(br)
-    c=0
-    while read_bits!(br,1)!=0
-        c+=1
+    c = 0
+    while read_bits!(br, 1) != 0
+        c += 1
     end
     c
 end
 
-function compute_rice_k(x::Int32)
-    mag = max(abs(x),1)
-    clamp(fld(31 - leading_zeros(UInt32(mag)),2), 0, 15)
-end
-
-function rice_decode(br,k)
-    q=read_unary!(br)
-    r=read_bits!(br,k)
-    u=(q<<k)|r
+function rice_decode(br, k)
+    q = read_unary!(br)
+    r = read_bits!(br, k)
+    u = (q<<k)|r
     Int32((u & 1) != 0 ? -((u + 1) >> 1) : (u >> 1))
 end
 
@@ -154,7 +163,7 @@ function mid_side(L::Vector{Int32}, R::Vector{Int32})
 end
 
 function estimate_bits(v::Vector{Int32}, shift)
-    total=0
+    total = 0
     for x in v
         q = x >> shift
         total += abs(q) + 4
@@ -163,64 +172,67 @@ function estimate_bits(v::Vector{Int32}, shift)
 end
 
 # -------------------------
-# Encode / Decode generic Stereo{T<:Integer}
+# Stereo type
+# -------------------------
+struct Stereo{T<:Integer}
+    l::T
+    r::T
+end
+
+# -------------------------
+# Encode / Decode
 # -------------------------
 function encode_generic(X::AbstractVector{Stereo{T}}) where T<:Integer
     N = length(X)
-
-    lmsL,lmsR=LMS(),LMS()
-    shapeL=Int32(0)
-    shapeR=Int32(0)
-
-    bwL=BitWriter()
-    bwC=BitWriter()
+    lmsL,lmsR = LMS(), LMS()
+    shapeL, shapeR = Int32(0), Int32(0)
+    bwL, bwC = BitWriter(), BitWriter()
 
     for b in 1:BLOCKSIZE:N
-        bend=min(b+BLOCKSIZE-1,N)
-        Ns=bend-b+1
+        bend = min(b+BLOCKSIZE-1, N)
+        Ns = bend-b+1
 
-        errL=Int32[]
-        errR=Int32[]
+        errL = Int32[]
+        errR = Int32[]
 
         for i in 1:Ns
-            L=Int32(X[b+i-1].l)
-            R=Int32(X[b+i-1].r)
-            eL=L-lms_predict(lmsL)
-            eR=R-lms_predict(lmsR)
-            push!(errL,eL); push!(errR,eR)
-            lms_update!(lmsL,eL,L)
-            lms_update!(lmsR,eR,R)
+            L = Int32(X[b+i-1].l)
+            R = Int32(X[b+i-1].r)
+            eL = L - lms_predict(lmsL)
+            eR = R - lms_predict(lmsR)
+            push!(errL, eL)
+            push!(errR, eR)
+            lms_update!(lmsL, eL, L)
+            lms_update!(lmsR, eR, R)
         end
 
-        mid,side = mid_side(errL,errR)
-        use_ms = estimate_bits(mid,2)+estimate_bits(side,2) < estimate_bits(errL,2)+estimate_bits(errR,2)
-
-        write_bits!(bwL,use_ms,1)
+        mid, side = mid_side(errL, errR)
+        use_ms = estimate_bits(mid,2) + estimate_bits(side,2) < estimate_bits(errL,2) + estimate_bits(errR,2)
+        write_bits!(bwL, use_ms, 1)
 
         A = use_ms ? mid : errL
         B = use_ms ? side : errR
+        shiftA, shiftB = 2, 2
 
-        shiftA=2; shiftB=2
-
-        write_bits!(bwL,shiftA,4)
-        write_bits!(bwL,shiftB,4)
+        write_bits!(bwL, shiftA, 4)
+        write_bits!(bwL, shiftB, 4)
 
         for i in 1:Ns
-            for (vec,shape,shift,isL) in ((A,shapeL,shiftA,true),(B,shapeR,shiftB,false))
+            for (vec, shape, shift, isL) in ((A, shapeL, shiftA, true), (B, shapeR, shiftB, false))
                 err = vec[i] + shape
                 q = err >> shift
                 c = err - (q<<shift)
                 newshape = c - (shape >> 4)
-                kq=compute_rice_k(q)
-                kc=compute_rice_k(c)
-                write_bits!(bwL,kq,4)
-                rice_encode(bwL,q,kq)
-                write_bits!(bwC,kc,4)
-                rice_encode(bwC,c,kc)
+                kq = compute_rice_k(q)
+                kc = compute_rice_k(c)
+                write_bits!(bwL, kq, 4)
+                rice_encode(bwL, q, kq)
+                write_bits!(bwC, kc, 4)
+                rice_encode(bwC, c, kc)
                 if isL
-                    shapeL=newshape
+                    shapeL = newshape
                 else
-                    shapeR=newshape
+                    shapeR = newshape
                 end
             end
         end
@@ -228,27 +240,23 @@ function encode_generic(X::AbstractVector{Stereo{T}}) where T<:Integer
 
     flush_bits!(bwL)
     flush_bits!(bwC)
-
     return bwL.data, bwC.data
 end
 
 function decode_generic(bsL, bsC, N::Int, ::Type{T}) where T<:Integer
-    lmsL,lmsR=LMS(),LMS()
-    shapeL = Int32(0)
-    shapeR = Int32(0)
-
-    brL = BitReader(bsL)
-    brC = BitReader(bsC)
-
+    clamp_fn = x->clamp_sample(x, T)
+    lmsL,lmsR = LMS(), LMS()
+    shapeL, shapeR = Int32(0), Int32(0)
+    brL, brC = BitReader(bsL), BitReader(bsC)
     Xrec = Vector{Stereo{T}}(undef, N)
-    pos = 1
 
+    pos = 1
     while pos <= N
         use_ms = read_bits!(brL, 1) != 0
         shiftA = Int(read_bits!(brL, 4))
         shiftB = Int(read_bits!(brL, 4))
+        Ns = min(BLOCKSIZE, N-pos+1)
 
-        Ns = min(BLOCKSIZE, N - pos + 1)
         for _ in 1:Ns
             vals = Int32[]
             for (shape, shift, isL) in ((shapeL, shiftA, true), (shapeR, shiftB, false))
@@ -260,7 +268,6 @@ function decode_generic(bsL, bsC, N::Int, ::Type{T}) where T<:Integer
                 err_shaped = (q << shift) + c
                 err = err_shaped - shape
                 newshape = c - (shape >> 4)
-
                 push!(vals, err)
                 if isL
                     shapeL = newshape
@@ -271,24 +278,19 @@ function decode_generic(bsL, bsC, N::Int, ::Type{T}) where T<:Integer
 
             if use_ms
                 mid, side = vals[1], vals[2]
-                vals[1] = mid + (side >> 1)   # L
-                vals[2] = mid - (side >> 1)   # R
+                vals[1] = mid + (side >> 1)
+                vals[2] = mid - (side - (side >> 1))
             end
 
             resL, resR = vals[1], vals[2]
-
             L = lms_predict(lmsL) + resL
             R = lms_predict(lmsR) + resR
-
-            Xrec[pos] = Stereo{T}(L, R)
-
-            lms_update!(lmsL, resL, Int32(L))
-            lms_update!(lmsR, resR, Int32(R))
-
+            Xrec[pos] = Stereo{T}(clamp_sample(L,T), clamp_sample(R,T))
+            lms_update!(lmsL, resL, L)
+            lms_update!(lmsR, resR, R)
             pos += 1
         end
     end
-
     Xrec
 end
 
