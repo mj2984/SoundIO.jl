@@ -15,12 +15,16 @@ SoundIO.jl lets you **have your cake and eat it too**: achieve maximum performan
 ---
 
 ## 🚀 Why SoundIO.jl?
-*   **Transparent Processing:** * No hidden OS mixing or "magic" processing. If your hardware supports it—from high-bandwidth PCM to high-precision telemetry—SoundIO.jl can drive it.
-*   **Intuitive & Safe:** A Julian API (`open`, `close`, `isopen`) with rich REPL pretty-printing and Symbol-based error handling.
+
+SoundIO.jl offers transparent audio hardware access, bypassing OS mixing to support raw data formats from PCM to high-precision telemetry. Engineered for performance, it features minimal latency, zero allocations in the hot path, and safe abstractions for low-level resource management.
+
+*   **Transparent & Raw:** Drive your hardware exactly as intended. We ensure no hidden OS "magic" or resampling interferes with your signal path.¹
 *   **Performance First:** Internal buffers and synchronizers are designed for minimal latency and zero allocations in the hot path.
-*   **Extensible by Design:** Whether using the built-in **Frozen Audio Buffer** or defining a custom `<:SoundIOSynchronizer`, the infrastructure is built to be extended without sacrificing performance.
-*   **Fused Operations:** Control the input pipeline to implement smart optimizations—like fusing signal processing and data packing—directly within Julia.
+*   **Intuitive & Julian:** A professional systems-level API providing safety as a zero-cost abstraction, featuring rich REPL pretty-printing and Symbol-based error handling.
+*   **Extensible by Design:** Whether using the highly customizable built-in **Frozen Audio Buffer** or defining a custom transport layer using **`<:SoundIOSynchronizer`**, the infrastructure is built to be extended without sacrificing performance. Our type-specialized pipeline allows you to transform normal Julia code into high-performance callbacks for tasks like signal processing and real-time data packing.
+
 > <sup>1</sup> *Transparency is guaranteed for 'Raw' devices; behavior on non-raw devices depends on the OS backend.*
+
 ---
 
 ## 🧱 Core Synchronization Mechanisms
