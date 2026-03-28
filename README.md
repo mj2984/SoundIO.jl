@@ -42,6 +42,7 @@ SoundIO.jl provides highly customizable mechanisms for both ends of the streamin
 The library offers versatile synchronization methods for both system-level event handling and its built-in streaming mechanisms. System-level events like `wait(device)` or `wait(context)` utilize a **native blocking wait** for zero-CPU idling during system changes. The provided synchronizers for audio streams reflect specialized performance philosophies: the **Frozen Audio Buffer** uses **event-driven notifications** for efficient task sleeping, while the **Audio Callback Synchronizer** employs **deterministic spin-waiting** to bypass scheduler overhead—both of which serve as references for users implementing custom solutions.
 
 ---
+
 ### 🧩 Extensible Stream Framework
 
 SoundIO.jl stays close to a minimal, high-performance philosophy, serving as a robust foundation for building high-level abstractions. By leveraging multiple dispatch and a type-specialized pipeline, the architecture makes it trivial to extend the engine for:
@@ -53,20 +54,6 @@ Beyond audio, SoundIO.jl acts as a high-performance synchronous data transport l
 
 *   **Industrial & Medical:** Biomedical signals (ECG/EEG) and industrial sensor telemetry.
 *   **High-Precision Data:** Any streaming application requiring deterministic, low-latency delivery.
----
-
-## 🧱 Extensibility by Design
-SoundIO.jl stays close to a minimal, high-performance philosophy while using multiple dispatch to make high-level extensions trivial. The architecture is a foundation for building:
-*   Lock-free ring buffers and audio graphs
-*   Complex DSP pipelines and resamplers
-*   Asynchronous/Task-based processors and custom callback generators
-
----
-
-## 🌐 Universal Data Transport
-Beyond audio, SoundIO.jl acts as a high-performance synchronous data transport layer. Using **Exclusive Mode** provides a transparent pipe that bypasses OS mixers—making it an ideal transport for:
-*   Biomedical signals (ECG/EEG) and industrial sensor telemetry
-*   High-precision data streaming requiring deterministic, low-latency delivery
 
 ---
 
