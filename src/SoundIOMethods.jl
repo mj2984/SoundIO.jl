@@ -15,6 +15,7 @@ end
     ccall(soundio_outstream_begin_write_ptr, Cint, (Ptr{Cvoid}, Ptr{Ptr{SoundIoChannelArea_C}}, Ptr{Cint}), outstream_ptr, areas_ref, frames_ref)
     return unsafe_load(areas_ref[]).ptr, Int(frames_ref[]::Cint) # Note: unsafe_load(areas_ref[]) returns a SoundIoChannelArea_C
 end
+@inline commit_callback_buffer!(outstream_ptr::Ptr{SoundIoOutStream_C}) = ccall(soundio_outstream_end_write_ptr, Cint, (Ptr{Cvoid},), outstream_ptr)
 @inline get_source_ptr_base(buffer::FrozenAudioBuffer{T,Channels,isatomic,isclearing}) where {T,Channels,isatomic,isclearing} = isatomic ? Ptr{UInt8}(buffer.layout.data_ptr) + buffer.stream.current_offset_base : Ptr{UInt8}(buffer.layout.data_ptr)
 @inline get_frames_to_copy(buffer::FrozenAudioBuffer{T,Channels,isatomic,isclearing},actual_frames::Int) where {T,Channels,isatomic,isclearing} = min(actual_frames, buffer.layout.atom_frames - buffer.stream.atomic_frame_offset)
 # TODO:: underrun as type parameter.exit_on_underrun 
@@ -49,12 +50,12 @@ function frozen_audio_callback(outstream_ptr::Ptr{SoundIoOutStream_C}, frames_mi
     bytes_per_frame::Int = Channels * sizeof(T)
     buffer_ptr, actual_frames::Int = negotiate_callback_buffer_space(outstream_ptr, frames_max)
     source_ptr_base = get_source_ptr_base(buffer)
-    destination_ptr = Base.unsafe_convert(Ptr{UInt8}, buffer_ptr)
+    destination_ptr = Base.unsafe_convert(Ptr{UInt8}, buffer_ptr) # Base.unsafe_convert(Ptr{T}, buffer_ptr}
     frames_to_copy::Int = get_frames_to_copy(buffer, actual_frames)
     if frames_to_copy > 0
-        source_ptr = source_ptr_base + (buffer.stream.atomic_frame_offset * bytes_per_frame)
-        data_bytes_to_copy = frames_to_copy * bytes_per_frame
-        unsafe_copyto!(destination_ptr, source_ptr, data_bytes_to_copy)
+        source_ptr = source_ptr_base + (buffer.stream.atomic_frame_offset * bytes_per_frame) # layout.data_ptr + (stream.current_frame * Channels)
+        data_bytes_to_copy = frames_to_copy * bytes_per_frame #data_to_copy = frames_to_copy * Channels # In Units of T
+        unsafe_copyto!(destination_ptr, source_ptr, data_bytes_to_copy) #unsafe_copyto!(destination_ptr, source_ptr, data_to_copy)
         if isclearing
             ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), source_ptr, 0, data_bytes_to_copy)
         end
@@ -63,7 +64,7 @@ function frozen_audio_callback(outstream_ptr::Ptr{SoundIoOutStream_C}, frames_mi
     if frames_to_copy < actual_frames
         frozen_audio_callback_boundary_handler!(buffer, destination_ptr, frames_to_copy, actual_frames, bytes_per_frame)
     end
-    ccall(soundio_outstream_end_write_ptr, Cint, (Ptr{Cvoid},), outstream_ptr)
+    commit_callback_buffer!(outstream_ptr)
     return nothing
 end
 function realtime_audio_callback(outstream_ptr::Ptr{SoundIoOutStream_C}, frames_min::Cint, frames_max::Cint, sync::AudioCallbackSynchronizer)
@@ -79,7 +80,7 @@ function realtime_audio_callback(outstream_ptr::Ptr{SoundIoOutStream_C}, frames_
     else
         ccall(:uv_async_send, Cint, (Ptr{Cvoid},), sync.notify_handle.handle)
     end
-    ccall(soundio_outstream_end_write_ptr, Cint, (Ptr{Cvoid},), outstream_ptr)
+    commit_callback_buffer!(outstream_ptr)
     return nothing
 end
 function make_sound_output_callback(::Type{BufType}, callback_function::F) where {BufType<:SoundIOSynchronizer, F<:Function}
