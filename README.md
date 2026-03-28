@@ -1,7 +1,7 @@
 # SoundIO.jl
 **Transparent, high-performance audio transport.**
 
-**SoundIO.jl** is a high-quality streaming engine built on the robust `libsoundio` backend. It provides a Julia-native API for direct, low-latency access to your audio hardware, designed for developers who need full visibility and precise control over their signal path. By merging the surgical control of a C-level interface with Julia’s rapid development workflow, you can achieve hand-tuned C efficiency within a safe, expressive, and interactive environment.
+**SoundIO.jl** is a high-quality streaming engine built on the robust `libsoundio` backend. It provides a Julia-native API for direct, low-latency access to your audio hardware, designed for developers who need full visibility and precise control over their signal path. By merging the surgical control of a systems-level interface with Julia’s rapid development workflow, you can achieve native-level efficiency within a safe, expressive, and interactive environment.
 
 ---
 
@@ -10,7 +10,7 @@ SoundIO.jl lets you **have your cake and eat it too**: achieve maximum performan
 
 *   **Compile-Time Specialization:** We leverage Julia’s type system to generate optimized callback functions on the fly. The engine generates the optimal instructions by specializing on your stream's parameters—allowing your code to read like documentation while executing with the efficiency of hand-tuned machine procedures.
 *   **Interactive Exploration:** Designed for the REPL, the library acts like a text-based device manager. Custom pretty-printing and emojis provide a "GUI-like" overview of hardware capabilities—contexts, devices, and formats—as easily as inspecting a local variable.
-*   **Safe by Construction:** A stable, high-level buffer abstraction is provided for general use, but even custom implementations benefit from Julia-native abstractions for callbacks and optional managed GC-preservation. This design allows a Julia developer to leverage peak hardware performance without any C knowledge.
+*   **Safe by Construction:** A stable, high-level buffer abstraction is provided for general use, but even custom implementations benefit from Julia-native abstractions for callbacks and optional managed GC-preservation. This design allows a Julia developer to leverage peak hardware performance without needing low-level systems programming expertise.
 
 ---
 
