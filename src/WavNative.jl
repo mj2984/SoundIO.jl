@@ -1,4 +1,5 @@
-#module WavNativeExpress
+module WavNative
+using ..SamplesCore
 using BitIntegers, FixedPointNumbers#SoundCore
 
 export WavMetadata, get_wav_layout, audioread
@@ -147,4 +148,4 @@ function _process_bits!(dest::AbstractVector{T}, raw::Vector{UInt8}, meta::WavMe
     end
     return dest
 end
-#end
+end
