@@ -1,6 +1,6 @@
+include("SamplesCore.jl")
 module WavPackHybrid
-
-include("SoundCore.jl")
+using ..SamplesCore
 using BitIntegers
 export encode, decode, test_codec
 
