@@ -99,4 +99,5 @@ If you prefer the integer-based logic for performance:
 0: Success/EOF.
 < 0: -(ErrorEnumIndex).
 =#
+export enumerate_sound_devices!, list_sound_devices()
 end
