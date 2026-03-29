@@ -65,3 +65,49 @@ function realtime_audio_callback(outstream_ptr::Ptr{SoundIoOutStream_C}, frames_
     commit_callback_buffer!(outstream_ptr)
     return nothing
 end
+function open_sound_stream(device::SoundIODevice, bufferspec::Tuple{Ptr, Tuple{Integer, Integer, Integer}, Bool}, preserve::Any, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0)
+    buffer = FrozenAudioBuffer(bufferspec...)
+    callback = make_sound_output_callback(typeof(buffer),frozen_audio_callback)
+    return open_sound_stream(device, buffer, callback, preserve, sample_rate, format, latency_seconds)
+end
+function open_sound_stream(device::SoundIODevice, bufferspec::Type{<:Sample}, preserve::Any, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0)
+    buffer = AudioCallbackSynchronizer(bufferspec)
+    callback = make_sound_output_callback(typeof(buffer),realtime_audio_callback)
+    return open_sound_stream(device, buffer, callback, preserve, sample_rate, format, latency_seconds)
+end
+open_sound_stream(device::SoundIODevice, bufferspec::Type{<:Sample}, preserve::Any, sample_rate::Integer, latency_seconds::Float64 = 1.0) = open_sound_stream(device,bufferspec,preserve,sample_rate,get_destination_format(bufferspec),latency_seconds)
+open_sound_stream(device::SoundIODevice, bufferspec::Tuple{DataType,Integer}, preserve::Any, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0) = open_sound_stream(device,Sample{bufferspec[2],bufferspec[1]},preserve,sample_rate,format,latency_seconds)
+open_sound_stream(device::SoundIODevice, bufferspec::Tuple{DataType,Integer}, preserve::Any, sample_rate::Integer, latency_seconds::Float64 = 1.0) = open_sound_stream(device,Sample{bufferspec[2],bufferspec[1]},preserve,sample_rate,latency_seconds)
+is_pointer_safe(::Type{<:DenseArray}) = true
+is_pointer_safe(::Type{T}) where {T<:SubArray} = Base.iscontiguous(T)
+is_pointer_safe(::Type{<:Base.ReinterpretArray{T, N, S, A}}) where {T, N, S, A} = isbitstype(T) && is_pointer_safe(A)
+is_pointer_safe(::Type{<:AbstractArray}) = false
+is_pointer_safe(A::AbstractArray) = is_pointer_safe(typeof(A))
+function Base.open(device::SoundIODevice, bufferspec::Tuple{AbstractArray{Sample{Channels, T},N},Bool}, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0) where {Channels,T,N}
+    if (N < 1) 
+        error("Audio data must have at least 1 dimensions: (Frames, ...)")
+    else
+        audio_data,isclearing = bufferspec
+        if(!is_pointer_safe(audio_data))
+            # throw error
+        end
+        atom_frames = size(audio_data,1)
+        total_atoms = div(length(audio_data),(atom_frames))
+        return open_sound_stream(device,(convert(Ptr{T},pointer(audio_data)),(Channels,atom_frames,total_atoms),isclearing),audio_data,sample_rate,format,latency_seconds)
+    end
+end
+function Base.open(device::SoundIODevice, bufferspec::Tuple{AbstractArray{T,N},Bool}, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0) where {T,N}
+    if (N < 2) 
+        error("Audio data must have at least 2 dimensions: (Channels, Frames, ...)")
+    else
+        audio_data,isclearing = bufferspec
+        if(!is_pointer_safe(audio_data))
+            # throw error
+        end
+        Channels = size(audio_data,1)
+        atom_frames = size(audio_data,2)
+        total_atoms = div(length(audio_data),(Channels*atom_frames))
+        return open_sound_stream(device,(pointer(audio_data),(Channels,atom_frames,total_atoms),isclearing),audio_data,sample_rate,format,latency_seconds)
+    end
+end
+Base.open(device::SoundIODevice, bufferspec::Tuple{AbstractArray{T,N},Bool}, sample_rate::Integer, latency_seconds::Float64 = 1.0) where {T,N} = open(device,bufferspec,sample_rate,get_destination_format(T),latency_seconds)
