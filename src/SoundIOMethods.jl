@@ -41,6 +41,11 @@ function open!(ctx::SoundIOContext)
 end
 # Handshake
 connect_unsafe!(ctx::SoundIOContext) = ccall((:soundio_connect, libsoundio), Cint, (Ptr{Cvoid},), ctx.ptr[]) != 0 && error("Connect failed")
+#=
+function connect_unsafe!(ctx::SoundIOContext)
+    check_err(ccall((:soundio_connect, libsoundio), Cint, (Ptr{Cvoid},), ctx.ptr[]))
+end
+=#
 function connect!(ctx::SoundIOContext)
     !isopen(ctx) && open!(ctx)
     !is_connected(ctx) && connect_unsafe!(ctx)
@@ -135,6 +140,11 @@ function open_sound_stream_unsafe!(ptr::Ptr{SoundIoOutStream_C})
     result = ccall((:soundio_outstream_open, libsoundio), Cint, (Ptr{Cvoid},), ptr)
     return result
 end
+#=
+function open_sound_stream_unsafe!(ptr::Ptr{SoundIoOutStream_C})
+    check_err(ccall((:soundio_outstream_open, libsoundio), Cint, (Ptr{Cvoid},), ptr))
+end
+=#
 function open_sound_stream(device::SoundIODevice, buffer::T, callback::Base.CFunction, preserve::Any, sample_rate::Integer, format::Int32, latency_seconds::Float64 = 3.0) where {T <: SoundIOSynchronizer}
     out_ptr = initialize_sound_stream(device)
     buffer_ref = Ref(buffer)
@@ -198,6 +208,12 @@ function start!(stream::SoundIOOutStream)
         update_callback_status_message(stream.sync[],Int8(-2))
     end
 end
+#=
+function start!(stream::SoundIOOutStream)
+    update_callback_status_message(stream.sync[], CallbackJuliaDone)
+    check_err(ccall((:soundio_outstream_start, libsoundio), Cint, (Ptr{Cvoid},), stream.ptr))
+end
+=#
 @inline destroy_sound_stream_unsafe(stream::SoundIOOutStream) = ccall((:soundio_outstream_destroy, libsoundio), Cvoid, (Ptr{Cvoid},), stream.ptr)
 @inline function destroy_sound_stream!(device::SoundIODevice,stream_enumeration::Int)
     stream = device.streams[stream_enumeration]
