@@ -12,77 +12,10 @@ end
 @inline function negotiate_callback_buffer_space(outstream_ptr::Ptr{SoundIoOutStream_C},requested_frames::Cint)
     areas_ref = Ref{Ptr{SoundIoChannelArea_C}}()
     frames_ref = Ref{Cint}(requested_frames) # Frames ref is both an input and output to soundio_outstream_begin_write_ptr. frames_max, frames_min is input from sound driver in the OS. User chooses a frame size based on this and the function checks and returns available memory (updates in place).
-    ccall(soundio_outstream_begin_write_ptr, Cint, (Ptr{Cvoid}, Ptr{Ptr{SoundIoChannelArea_C}}, Ptr{Cint}), outstream_ptr, areas_ref, frames_ref)
+    ccall((:soundio_outstream_begin_write,libsoundio), Cint, (Ptr{Cvoid}, Ptr{Ptr{SoundIoChannelArea_C}}, Ptr{Cint}), outstream_ptr, areas_ref, frames_ref)
     return unsafe_load(areas_ref[]).ptr, Int(frames_ref[]::Cint) # Note: unsafe_load(areas_ref[]) returns a SoundIoChannelArea_C
 end
-@inline commit_callback_buffer!(outstream_ptr::Ptr{SoundIoOutStream_C}) = ccall(soundio_outstream_end_write_ptr, Cint, (Ptr{Cvoid},), outstream_ptr)
-@inline get_source_ptr_base(buffer::FrozenAudioBuffer{T,Channels,isatomic,isclearing}) where {T,Channels,isatomic,isclearing} = isatomic ? Ptr{UInt8}(buffer.layout.data_ptr) + buffer.stream.current_offset_base : Ptr{UInt8}(buffer.layout.data_ptr)
-@inline get_frames_to_copy(buffer::FrozenAudioBuffer{T,Channels,isatomic,isclearing},actual_frames::Int) where {T,Channels,isatomic,isclearing} = min(actual_frames, buffer.layout.atom_frames - buffer.stream.atomic_frame_offset)
-# TODO:: underrun as type parameter.exit_on_underrun 
-function frozen_audio_callback_boundary_handler!(buffer::FrozenAudioBuffer{T,Channels,isatomic,isclearing}, destination_ptr::Ptr{UInt8}, frames_copied::Int, actual_frames::Int, bytes_per_frame::Int) where {T,Channels,isatomic,isclearing} # Handle Silence / End-of-Buffer-Atom
-    layout,stream = buffer.layout, buffer.stream
-    exchange::FrozenAudioExchange = @atomic stream.exchange
-    pending_frames = actual_frames - frames_copied
-    starting_ptr = destination_ptr + (frames_copied * bytes_per_frame)
-    pending_bytes = pending_frames * bytes_per_frame
-    elapsed_atoms::Int = isatomic ? exchange.elapsed_atoms + 1 : 0
-    stream.atomic_frame_offset = pending_frames
-    return_status::Int8 = exchange.status
-    if return_status == CallbackJuliaDone
-        if isatomic
-            atom_bytes = layout.atom_frames * bytes_per_frame # assert pending_bytes < atom_bytes (but this should be done outside)
-            next_offset_base = (stream.current_offset_base + atom_bytes) % (layout.total_atoms * atom_bytes) # Wrap back to 0 at end of loop.
-            stream.current_offset_base = next_offset_base
-        end
-        next_atom_ptr = get_source_ptr_base(buffer)
-        unsafe_copyto!(starting_ptr, next_atom_ptr, pending_bytes)
-        if isclearing
-            ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), next_atom_ptr, 0, pending_bytes)
-        end
-    else
-        return_status = CallbackStopped
-        ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), starting_ptr, 0, pending_bytes)
-    end
-    @atomic stream.exchange = FrozenAudioExchange(pending_frames, elapsed_atoms, return_status)
-    ccall(:uv_async_send, Cint, (Ptr{Cvoid},), stream.notify_handle.handle)
-end
-function frozen_audio_callback(outstream_ptr::Ptr{SoundIoOutStream_C}, frames_min::Cint, frames_max::Cint, buffer::FrozenAudioBuffer{T,Channels,isatomic,isclearing}) where {T,Channels,isatomic,isclearing}
-    bytes_per_frame::Int = Channels * sizeof(T)
-    buffer_ptr, actual_frames::Int = negotiate_callback_buffer_space(outstream_ptr, frames_max)
-    source_ptr_base = get_source_ptr_base(buffer)
-    destination_ptr = Base.unsafe_convert(Ptr{UInt8}, buffer_ptr) # Base.unsafe_convert(Ptr{T}, buffer_ptr}
-    frames_to_copy::Int = get_frames_to_copy(buffer, actual_frames)
-    if frames_to_copy > 0
-        source_ptr = source_ptr_base + (buffer.stream.atomic_frame_offset * bytes_per_frame) # layout.data_ptr + (stream.current_frame * Channels)
-        data_bytes_to_copy = frames_to_copy * bytes_per_frame #data_to_copy = frames_to_copy * Channels # In Units of T
-        unsafe_copyto!(destination_ptr, source_ptr, data_bytes_to_copy) #unsafe_copyto!(destination_ptr, source_ptr, data_to_copy)
-        if isclearing
-            ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), source_ptr, 0, data_bytes_to_copy)
-        end
-        buffer.stream.atomic_frame_offset += frames_to_copy
-    end
-    if frames_to_copy < actual_frames
-        frozen_audio_callback_boundary_handler!(buffer, destination_ptr, frames_to_copy, actual_frames, bytes_per_frame)
-    end
-    commit_callback_buffer!(outstream_ptr)
-    return nothing
-end
-function realtime_audio_callback(outstream_ptr::Ptr{SoundIoOutStream_C}, frames_min::Cint, frames_max::Cint, sync::AudioCallbackSynchronizer)
-    message::AudioCallbackMessage = (@atomic sync.message)
-    if message.status == CallbackJuliaDone
-        buffer_ptr, actual_frames = negotiate_callback_buffer_space(outstream_ptr, frames_max)
-        if actual_frames > 0
-            @atomic sync.message = AudioCallbackMessage(CallbackStatusReady, buffer_ptr, actual_frames)
-            while (msg = @atomic sync.message).status == CallbackStatusReady
-                ccall(:jl_cpu_pause, Cvoid, ())
-            end
-        end
-    else
-        ccall(:uv_async_send, Cint, (Ptr{Cvoid},), sync.notify_handle.handle)
-    end
-    commit_callback_buffer!(outstream_ptr)
-    return nothing
-end
+@inline commit_callback_buffer!(outstream_ptr::Ptr{SoundIoOutStream_C}) = ccall((:soundio_outstream_end_write,libsoundio), Cint, (Ptr{Cvoid},), outstream_ptr)
 function make_sound_output_callback(::Type{BufType}, callback_function::F) where {BufType<:SoundIOSynchronizer, F<:Function}
     callback = (out_ptr, f_min, f_max) -> begin
         buffer::BufType = get_audio_buffer(out_ptr, BufType)
@@ -135,7 +68,7 @@ flush_events_unsafe!(ctx::SoundIOContext) = ccall((:soundio_flush_events, libsou
 flush_events!(ctx::SoundIOContext) = isopen(ctx) && flush_events_unsafe!(ctx)
 # Blocking Wait
 # Note: soundio_wait_events blocks the thread until an event occurs.
-@inline SoundIO_wait_unsafe(ctx_ptr) = ccall(soundio_wait_events_ptr, Cvoid, (Ptr{Cvoid},), ctx_ptr)
+@inline SoundIO_wait_unsafe(ctx_ptr) = ccall((:soundio_wait_events,libsoundio), Cvoid, (Ptr{Cvoid},), ctx_ptr)
 @inline wait_unsafe(device::SoundIODevice) = SoundIO_wait_unsafe(device.ptrs[].ctx)
 @inline wait_unsafe(ctx::SoundIOContext) = SoundIO_wait_unsafe(ctx.ptr[])
 @inline Base.wait(ctx::SoundIOContext)= isopen(ctx) && wait_unsafe(ctx)
@@ -150,24 +83,35 @@ function SoundIOContext(f::Function)
         close(ctx) 
     end
 end
-function enumerate_devices_unsafe_internal!(ctx::SoundIOContext, ptrs::DeviceEnumeratorPtrs)
-    device_count = ccall(ptrs.count, Cint, (Ptr{Cvoid},), ctx.ptr[])
-    default_device_offset = ccall(ptrs.default_offset, Cint, (Ptr{Cvoid},), ctx.ptr[])
+function get_device_count_and_offset(ctx::SoundIOContext, isinput::Val{true})
+    device_count = ccall((:soundio_input_device_count, libsoundio), Cint, (Ptr{Cvoid},), ctx.ptr[])
+    default_device_offset = ccall((:soundio_default_input_device_index, libsoundio), Cint, (Ptr{Cvoid},), ctx.ptr[])
+    return device_count, default_device_offset
+end
+function get_device_count_and_offset(ctx::SoundIOContext, isinput::Val{false})
+    device_count = ccall((:soundio_output_device_count, libsoundio), Cint, (Ptr{Cvoid},), ctx.ptr[])
+    default_device_offset = ccall((:soundio_default_output_device_index, libsoundio), Cint, (Ptr{Cvoid},), ctx.ptr[])
+    return device_count, default_device_offset
+end
+get_device_ptr(ctx::SoundIOContext, offset::Int, isinput::Val{true}) = ccall((:soundio_get_input_device, libsoundio), Ptr{Cvoid}, (Ptr{Cvoid}, Cint), ctx.ptr[], offset)
+get_device_ptr(ctx::SoundIOContext, offset::Int, isinput::Val{false}) = ccall((:soundio_get_output_device, libsoundio), Ptr{Cvoid}, (Ptr{Cvoid}, Cint), ctx.ptr[], offset)
+function enumerate_devices_unsafe_internal!(ctx::SoundIOContext, directiontype::Val{isinput}) where isinput
+    device_count, default_device_offset = get_device_count_and_offset(ctx,directiontype)
     for offset in 0:(device_count - 1)
-        device_ptr = ccall(ptrs.get_device_ptr, Ptr{Cvoid}, (Ptr{Cvoid}, Cint), ctx.ptr[], offset)
+        device_ptr = get_device_ptr(ctx,offset,directiontype)
         # if dev_ptr != C_NULL
         # try
         push!(ctx.devices, SoundIODevice(ctx.ptr[], device_ptr, offset == default_device_offset))
         # finally
-        ccall(soundio_device_unref_ptr, Cvoid, (Ptr{Cvoid},), device_ptr)
+        ccall((:soundio_device_unref,libsoundio), Cvoid, (Ptr{Cvoid},), device_ptr)
         # end
     end
 end
 function enumerate_devices_unsafe!(ctx::SoundIOContext)
     flush_events!(ctx)
     empty!(ctx.devices)
-    enumerate_devices_unsafe_internal!(ctx, DEVICE_ENUMERATOR_OUTPUT_PTRS)
-    enumerate_devices_unsafe_internal!(ctx, DEVICE_ENUMERATOR_INPUT_PTRS)
+    enumerate_devices_unsafe_internal!(ctx, Val(true))
+    enumerate_devices_unsafe_internal!(ctx, Val(false))
 end
 function enumerate_devices!(ctx::SoundIOContext)
     if(is_connected(ctx)) # Ensure we have a valid connection
@@ -217,24 +161,6 @@ function open_sound_stream(device::SoundIODevice, buffer::T, callback_function::
     callback = make_sound_output_callback(T,callback_function)
     return open_sound_stream(device,buffer,callback,preserve,sample_rate,format,latency_seconds)
 end
-function open_sound_stream(device::SoundIODevice, bufferspec::Tuple{Ptr, Tuple{Integer, Integer, Integer}, Bool}, preserve::Any, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0)
-    buffer = FrozenAudioBuffer(bufferspec...)
-    callback = make_sound_output_callback(typeof(buffer),frozen_audio_callback)
-    return open_sound_stream(device, buffer, callback, preserve, sample_rate, format, latency_seconds)
-end
-function open_sound_stream(device::SoundIODevice, bufferspec::Type{<:Sample}, preserve::Any, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0)
-    buffer = AudioCallbackSynchronizer(bufferspec)
-    callback = make_sound_output_callback(typeof(buffer),realtime_audio_callback)
-    return open_sound_stream(device, buffer, callback, preserve, sample_rate, format, latency_seconds)
-end
-open_sound_stream(device::SoundIODevice, bufferspec::Type{<:Sample}, preserve::Any, sample_rate::Integer, latency_seconds::Float64 = 1.0) = open_sound_stream(device,bufferspec,preserve,sample_rate,get_destination_format(bufferspec),latency_seconds)
-open_sound_stream(device::SoundIODevice, bufferspec::Tuple{DataType,Integer}, preserve::Any, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0) = open_sound_stream(device,Sample{bufferspec[2],bufferspec[1]},preserve,sample_rate,format,latency_seconds)
-open_sound_stream(device::SoundIODevice, bufferspec::Tuple{DataType,Integer}, preserve::Any, sample_rate::Integer, latency_seconds::Float64 = 1.0) = open_sound_stream(device,Sample{bufferspec[2],bufferspec[1]},preserve,sample_rate,latency_seconds)
-is_pointer_safe(::Type{<:DenseArray}) = true
-is_pointer_safe(::Type{T}) where {T<:SubArray} = Base.iscontiguous(T)
-is_pointer_safe(::Type{<:Base.ReinterpretArray{T, N, S, A}}) where {T, N, S, A} = isbitstype(T) && is_pointer_safe(A)
-is_pointer_safe(::Type{<:AbstractArray}) = false
-is_pointer_safe(A::AbstractArray) = is_pointer_safe(typeof(A))
 function get_destination_format(::Type{T}) where T
     T === Int16   && return SoundIoFormats[:Int16Little]
     T === Int32   && return SoundIoFormats[:Int32Little]
@@ -246,34 +172,6 @@ function get_destination_format(::Type{T}) where T
 end
 get_destination_format(::Type{<:Fixed{T, f}}) where {T, f} = get_destination_format(T)
 get_destination_format(::Type{Sample{N, T}}) where {N, T} = get_destination_format(T)
-function Base.open(device::SoundIODevice, bufferspec::Tuple{AbstractArray{Sample{Channels, T},N},Bool}, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0) where {Channels,T,N}
-    if (N < 1) 
-        error("Audio data must have at least 1 dimensions: (Frames, ...)")
-    else
-        audio_data,isclearing = bufferspec
-        if(!is_pointer_safe(audio_data))
-            # throw error
-        end
-        atom_frames = size(audio_data,1)
-        total_atoms = div(length(audio_data),(atom_frames))
-        return open_sound_stream(device,(convert(Ptr{T},pointer(audio_data)),(Channels,atom_frames,total_atoms),isclearing),audio_data,sample_rate,format,latency_seconds)
-    end
-end
-function Base.open(device::SoundIODevice, bufferspec::Tuple{AbstractArray{T,N},Bool}, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0) where {T,N}
-    if (N < 2) 
-        error("Audio data must have at least 2 dimensions: (Channels, Frames, ...)")
-    else
-        audio_data,isclearing = bufferspec
-        if(!is_pointer_safe(audio_data))
-            # throw error
-        end
-        Channels = size(audio_data,1)
-        atom_frames = size(audio_data,2)
-        total_atoms = div(length(audio_data),(Channels*atom_frames))
-        return open_sound_stream(device,(pointer(audio_data),(Channels,atom_frames,total_atoms),isclearing),audio_data,sample_rate,format,latency_seconds)
-    end
-end
-Base.open(device::SoundIODevice, bufferspec::Tuple{AbstractArray{T,N},Bool}, sample_rate::Integer, latency_seconds::Float64 = 1.0) where {T,N} = open(device,bufferspec,sample_rate,get_destination_format(T),latency_seconds)
 
 # 4. Resume existing stream. (Streams persist over context changes)
 function reopen!(stream::SoundIOOutStream)
