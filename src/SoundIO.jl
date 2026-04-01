@@ -2,9 +2,7 @@
 # Copyright (c) 2026 mj2984. Licensed under the MIT License.
 # libsoundio is Copyright (c) 2015 Andrew Kelley.
 module SoundIO
-include("SamplesCore.jl")
-#using ..SamplesCore
-using Libdl, libsoundio_jll, FixedPointNumbers
+using Libdl, libsoundio_jll, FixedPointNumbers, SamplesCore
 include("SoundIOConstants.jl")
 include("SoundIOStructs.jl")
 include("SoundIOPrettyPrintMethods.jl")
