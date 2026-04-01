@@ -1,8 +1,4 @@
-include(raw"../src/SoundIO.jl")
-include(raw"../src/WavNative.jl")
-using .SoundIO1
-using .WavNative
-using .SamplesCore
+using SamplesCore, WavNative, SoundIO
 #using PtrArrays
 # Frozen Audio Buffer Example.
 function play_audio(audio_data::AbstractArray{T}, sample_rate::Integer, device::SoundIODevice) where {T<:Union{Number,Sample}}
