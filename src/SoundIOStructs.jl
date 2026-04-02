@@ -78,7 +78,7 @@ struct SoundIoDevice_C
     ref_count::Cint          # 212
     =#
 end
-mutable struct SoundIoOutStream_C
+mutable struct SoundIoOutputStream_C
     device::Ptr{Cvoid}
     format::Cint #Int32
     sample_rate::Cint #Int32
@@ -95,11 +95,28 @@ mutable struct SoundIoOutStream_C
     bytes_per_sample::Cint
     layout_error::Cint
 end
-const SOUNDIO_OUTSTREAM_USERDATA_OFFSET = fieldoffset(SoundIoOutStream_C, 7)
+const SOUNDIO_OUTPUTSTREAM_USERDATA_OFFSET = fieldoffset(SoundIoOutputStream_C, 7)
+mutable struct SoundIoInputStream_C
+    device::Ptr{Cvoid}
+    format::Cint
+    sample_rate::Cint
+    layout::SoundIoChannelLayout
+    software_latency::Cdouble
+    userdata::Ptr{Cvoid}
+    read_callback::Ptr{Cvoid}      # Handshake for capturing data
+    overflow_callback::Ptr{Cvoid}  # Triggered when Julia is too slow
+    error_callback::Ptr{Cvoid}
+    name::Ptr{Cchar}
+    non_terminal_hint::Cint
+    bytes_per_frame::Cint
+    bytes_per_sample::Cint
+    layout_error::Cint
+end
+const SOUNDIO_INPUTSTREAM_USERDATA_OFFSET = fieldoffset(SoundIoInputStream_C, 6)
 # --- High-Level Julia Wrappers ---
 # Pre-declare for the Device struct
-struct SoundIOOutStream{T <: SoundIOSynchronizer}
-    ptr::Ptr{SoundIoOutStream_C}
+struct SoundIOStream{StreamBaseType,T <: SoundIOSynchronizer}
+    ptr::Ptr{StreamBaseType}
     format::Cint #Int32
     rate::Cint #Int32
     sync::Ref{T}
@@ -110,21 +127,25 @@ struct SoundIODevicePtrs
     device::Ptr{Cvoid}
     ctx::Ptr{Cvoid}
 end
-struct SoundIODevice
+struct SoundIODevice{StreamBaseType}
     ptrs::Base.RefValue{SoundIODevicePtrs}
     name::String
     id::String
-    is_input::Bool
     is_default::Bool
     is_raw::Bool
-    streams::Vector{SoundIOOutStream}
+    streams::Vector{SoundIOStream{StreamBaseType,<:SoundIOSynchronizer}}
     function SoundIODevice(ctx_ptr::Ptr{Cvoid}, device_ptr::Ptr{Cvoid}, name::String, id::String, is_input::Bool, is_default::Bool, is_raw::Bool)
         ccall((:soundio_device_ref, libsoundio), Cvoid, (Ptr{Cvoid},), device_ptr) # Increment C-ref count to keep memory alive while this Julia object exists
-        return new(Ref(SoundIODevicePtrs(device_ptr, ctx_ptr)), name, id, is_input, is_default, is_raw, SoundIOOutStream[])
+        StreamBaseType = is_input ? SoundIoInputStream_C : SoundIoOutputStream_C
+        return new{StreamBaseType}(Ref(SoundIODevicePtrs(device_ptr, ctx_ptr)), name, id, is_default, is_raw, Vector{SoundIOStream{StreamBaseType, <:SoundIOSynchronizer}}())
         # Decrement Ref Count on GC
         #=finalizer(dev) do d
             for s in d.streams
-                ccall((:soundio_outstream_destroy, libsoundio), Cvoid, (Ptr{Cvoid},), s.ptr)
+                if(StreamBaseType == SoundIoOutputStream_C)
+                    ccall((:soundio_outstream_destroy, libsoundio), Cvoid, (Ptr{Cvoid},), s.ptr)
+                else
+                    ccall((:soundio_instream_destroy, libsoundio), Cvoid, (Ptr{Cvoid},), s.ptr)
+                end
             end
             ccall((:soundio_device_unref, libsoundio), Cvoid, (Ptr{Cvoid},), d.ptr)
         end
