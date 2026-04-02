@@ -61,19 +61,41 @@ Beyond audio, SoundIO.jl acts as a high-performance synchronous data transport l
 SoundIO.jl manages backend connections automatically. Use `with_context` for a clean ownership model:
 
 ```julia
-using SoundIO
-
-# 1. Prepare Stereo Data
-fs = 44100
-audio_data = rand(Int16, 2, fs) 
-
-# 2. Play on Default Raw Device
-with_context() do ctx
-    enumerate_devices!(ctx)
-    # Filter for 'Raw' devices for lowest latency
-    device = first(filter(d -> !d.is_input && d.is_raw, ctx.devices))
-    
-    stream = open(device, (audio_data, false), fs, :Int16Little)
-    start!(stream)
-    wait(stream)
+using SamplesCore, SoundIO
+function get_sound_devices()
+    enumerate_sound_devices!()
+    all_devices = list_sound_devices()
+    input_device  = first(filter(d -> d.is_input && d.is_raw, all_devices))
+    output_device = first(filter(d -> !d.is_input && d.is_raw, all_devices))
+    return input_device,output_device
 end
+
+function start_loop(input_stream,output_stream,)
+    input_sync  = input_stream.sync[].stream::FrozenAudioStream
+    println("🎤 Starting Capture...")
+    start!(input_stream)
+    wait(input_sync)
+    println("🔊 Starting Playback (Real-Time Loopback)...")
+    start!(output_stream)
+    try
+        exchange::FrozenAudioExchange = @atomic input_sync.exchange
+        while exchange.status == CallbackJuliaDone
+            wait(input_sync)
+            exchange = @atomic input_sync.exchange
+        end
+    finally
+        close(input_sync)
+        destroy_sound_stream_unsafe(input_stream)
+    end
+end
+
+sampling_frequency = 48000
+buffer_atom_time = 0.5
+total_buffer_atoms = 10
+shared_data = zeros(Sample{2, Int16}, Int(buffer_atom_time * sampling_frequency), total_buffer_atoms)
+
+input_device, output_device = get_sound_devices()
+input_stream  = open(input_device,  (shared_data, false), sampling_frequency)
+output_stream = open(output_device, (shared_data, false), sampling_frequency)
+
+start_loop(input_stream,output_stream)
