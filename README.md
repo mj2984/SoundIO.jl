@@ -58,7 +58,16 @@ Beyond audio, SoundIO.jl acts as a high-performance synchronous data transport l
 ---
 
 ## 📦 Quick Start
-The code below shows how to connect to input and output devices and perform a loopback, using user defined arrays (using the Frozen Audio Buffer infrastructure)
+
+The following example demonstrates a **deterministic, bidirectional loopback** using the **Frozen Audio Buffer** infrastructure. It showcases how a single pre-allocated array acts as a shared memory bridge between input and output streams with zero-cost overhead.
+
+### 🏗️ How it Works
+1.  **Shared Memory Bridge**: A 2D array of `Sample{2, Int16}` serves as the central transport. In this "Flow" model, the input hardware writes to the array while the output hardware reads from it in parallel.
+2.  **Symmetric Initialization**: Both streams are opened using the same unified API. The library automatically handles memory anchoring to ensure `shared_data` remains GC-safe while the hardware callbacks are active.
+3.  **Phase Alignment**: By starting the capture device first and using `wait(input_sync)` to catch the first "atom" notification, the system ensures the output buffer is primed with recorded data before playback begins.
+4.  **Async Control**: The loop runs in a spawned task, allowing the main Julia session to remain interactive. Because the transport is direct, you can "peek" into `shared_data` in real-time to inspect or process the signal without interrupting the hardware clock.
+
+### 📦 Example Code
 
 ```julia
 using SamplesCore, SoundIO
