@@ -1,5 +1,5 @@
-function Base.show(io::IO, dev::SoundIODevice)
-    icon = dev.is_input ? "🎤" : "🎧"
+function Base.show(io::IO, dev::SoundIODevice{StreamBaseType}) where {StreamBaseType}
+    icon = StreamBaseType == SoundIoInputStream_C ? "🎤" : "🎧"
     mode_icon = dev.is_raw ? "🔗" : "  "
     default_mark = dev.is_default ? " ⭐" : ""
     print(io, "$icon [$mode_icon] $(dev.name)$default_mark")
@@ -27,7 +27,7 @@ function Base.show(io::IO, ctx::SoundIOContext)
         end
     end
 end
-function Base.show(io::IO, s::SoundIOOutStream)
+function Base.show(io::IO, s::SoundIOStream{S, T}) where {S, T}
     # Map the Int32 format back to a Symbol for the user if possible
     fmt_sym = :Unknown
     for (k, v) in SoundIoFormats
@@ -36,5 +36,7 @@ function Base.show(io::IO, s::SoundIOOutStream)
             break
         end
     end
-    print(io, "🔊 OutStream($(s.rate)Hz, :$fmt_sym) [Ptr: $(s.ptr)]")
+    stream_type = S === SoundIoInputStream_C ? "InStream" : "OutStream"
+    icon = S === SoundIoInputStream_C ? "🎙️ " : "🔊 "
+    print(io, "$icon $stream_type($(s.rate)Hz, :$fmt_sym) [Ptr: $(s.ptr)]")
 end
