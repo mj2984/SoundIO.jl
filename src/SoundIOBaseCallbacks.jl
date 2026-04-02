@@ -1,7 +1,7 @@
 @inline get_source_ptr_base(buffer::FrozenAudioBuffer{T,Channels,isatomic,isclearing}) where {T,Channels,isatomic,isclearing} = isatomic ? Ptr{UInt8}(buffer.layout.data_ptr) + buffer.stream.current_offset_base : Ptr{UInt8}(buffer.layout.data_ptr)
 @inline get_frames_to_copy(buffer::FrozenAudioBuffer{T,Channels,isatomic,isclearing},actual_frames::Int) where {T,Channels,isatomic,isclearing} = min(actual_frames, buffer.layout.atom_frames - buffer.stream.atomic_frame_offset)
 # TODO:: underrun as type parameter.exit_on_underrun 
-function frozen_audio_callback_boundary_handler!(buffer::FrozenAudioBuffer{T,Channels,isatomic,isclearing}, destination_ptr::Ptr{UInt8}, frames_copied::Int, actual_frames::Int, bytes_per_frame::Int) where {T,Channels,isatomic,isclearing} # Handle Silence / End-of-Buffer-Atom
+function frozen_audio_callback_boundary_handler!(::Type{StreamBaseType},buffer::FrozenAudioBuffer{T,Channels,isatomic,isclearing}, destination_ptr::Ptr{UInt8}, frames_copied::Int, actual_frames::Int, bytes_per_frame::Int) where {StreamBaseType,T,Channels,isatomic,isclearing} # Handle Silence / End-of-Buffer-Atom
     layout,stream = buffer.layout, buffer.stream
     exchange::FrozenAudioExchange = @atomic stream.exchange
     pending_frames = actual_frames - frames_copied
@@ -17,7 +17,11 @@ function frozen_audio_callback_boundary_handler!(buffer::FrozenAudioBuffer{T,Cha
             stream.current_offset_base = next_offset_base
         end
         next_atom_ptr = get_source_ptr_base(buffer)
-        unsafe_copyto!(starting_ptr, next_atom_ptr, pending_bytes)
+        if StreamBaseType === SoundIoOutputStream_C
+            unsafe_copyto!(starting_ptr, next_atom_ptr, pending_bytes)
+        else
+            unsafe_copyto!(next_atom_ptr, starting_ptr, pending_bytes)
+        end
         if isclearing
             ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), next_atom_ptr, 0, pending_bytes)
         end
@@ -28,7 +32,7 @@ function frozen_audio_callback_boundary_handler!(buffer::FrozenAudioBuffer{T,Cha
     @atomic stream.exchange = FrozenAudioExchange(pending_frames, elapsed_atoms, return_status)
     ccall(:uv_async_send, Cint, (Ptr{Cvoid},), stream.notify_handle.handle)
 end
-function frozen_audio_callback(outstream_ptr::Ptr{SoundIoOutStream_C}, frames_min::Cint, frames_max::Cint, buffer::FrozenAudioBuffer{T,Channels,isatomic,isclearing}) where {T,Channels,isatomic,isclearing}
+function frozen_audio_callback(outstream_ptr::Ptr{StreamBaseType}, frames_min::Cint, frames_max::Cint, buffer::FrozenAudioBuffer{T,Channels,isatomic,isclearing}) where {StreamBaseType,T,Channels,isatomic,isclearing}
     bytes_per_frame::Int = Channels * sizeof(T)
     buffer_ptr, actual_frames::Int = negotiate_callback_buffer_space(outstream_ptr, frames_max)
     source_ptr_base = get_source_ptr_base(buffer)
@@ -37,19 +41,23 @@ function frozen_audio_callback(outstream_ptr::Ptr{SoundIoOutStream_C}, frames_mi
     if frames_to_copy > 0
         source_ptr = source_ptr_base + (buffer.stream.atomic_frame_offset * bytes_per_frame) # layout.data_ptr + (stream.current_frame * Channels)
         data_bytes_to_copy = frames_to_copy * bytes_per_frame #data_to_copy = frames_to_copy * Channels # In Units of T
-        unsafe_copyto!(destination_ptr, source_ptr, data_bytes_to_copy) #unsafe_copyto!(destination_ptr, source_ptr, data_to_copy)
+        if(StreamBaseType == SoundIoOutputStream_C)
+            unsafe_copyto!(destination_ptr, source_ptr, data_bytes_to_copy) #unsafe_copyto!(destination_ptr, source_ptr, data_to_copy)
+        else
+            unsafe_copyto!(source_ptr, destination_ptr, data_bytes_to_copy)
+        end
         if isclearing
             ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), source_ptr, 0, data_bytes_to_copy)
         end
         buffer.stream.atomic_frame_offset += frames_to_copy
     end
     if frames_to_copy < actual_frames
-        frozen_audio_callback_boundary_handler!(buffer, destination_ptr, frames_to_copy, actual_frames, bytes_per_frame)
+        frozen_audio_callback_boundary_handler!(StreamBaseType, buffer, destination_ptr, frames_to_copy, actual_frames, bytes_per_frame)
     end
     commit_callback_buffer!(outstream_ptr)
     return nothing
 end
-function realtime_audio_callback(outstream_ptr::Ptr{SoundIoOutStream_C}, frames_min::Cint, frames_max::Cint, sync::AudioCallbackSynchronizer)
+function realtime_audio_callback(outstream_ptr::Ptr{StreamBaseType}, frames_min::Cint, frames_max::Cint, sync::AudioCallbackSynchronizer) where {StreamBaseType}
     message::AudioCallbackMessage = (@atomic sync.message)
     if message.status == CallbackJuliaDone
         buffer_ptr, actual_frames = negotiate_callback_buffer_space(outstream_ptr, frames_max)
@@ -65,14 +73,14 @@ function realtime_audio_callback(outstream_ptr::Ptr{SoundIoOutStream_C}, frames_
     commit_callback_buffer!(outstream_ptr)
     return nothing
 end
-function open_sound_stream(device::SoundIODevice, bufferspec::Tuple{Ptr, Tuple{Integer, Integer, Integer}, Bool}, preserve::Any, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0)
+function open_sound_stream(device::SoundIODevice{StreamBaseType}, bufferspec::Tuple{Ptr, Tuple{Integer, Integer, Integer}, Bool}, preserve::Any, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0) where {StreamBaseType}
     buffer = FrozenAudioBuffer(bufferspec...)
-    callback = make_sound_output_callback(typeof(buffer),frozen_audio_callback)
+    callback = make_audio_callback(StreamBaseType,typeof(buffer),frozen_audio_callback)
     return open_sound_stream(device, buffer, callback, preserve, sample_rate, format, latency_seconds)
 end
-function open_sound_stream(device::SoundIODevice, bufferspec::Type{<:Sample}, preserve::Any, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0)
+function open_sound_stream(device::SoundIODevice{StreamBaseType}, bufferspec::Type{<:Sample}, preserve::Any, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0) where {StreamBaseType}
     buffer = AudioCallbackSynchronizer(bufferspec)
-    callback = make_sound_output_callback(typeof(buffer),realtime_audio_callback)
+    callback = make_audio_callback(StreamBaseType,typeof(buffer),realtime_audio_callback)
     return open_sound_stream(device, buffer, callback, preserve, sample_rate, format, latency_seconds)
 end
 open_sound_stream(device::SoundIODevice, bufferspec::Type{<:Sample}, preserve::Any, sample_rate::Integer, latency_seconds::Float64 = 1.0) = open_sound_stream(device,bufferspec,preserve,sample_rate,get_destination_format(bufferspec),latency_seconds)
