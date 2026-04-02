@@ -63,38 +63,42 @@ SoundIO.jl manages backend connections automatically. Use `with_context` for a c
 ```julia
 using SamplesCore, SoundIO
 function get_sound_devices()
-    enumerate_sound_devices!()
-    all_devices = list_sound_devices()
-    input_device  = first(filter(d -> d.is_input && d.is_raw, all_devices))
-    output_device = first(filter(d -> !d.is_input && d.is_raw, all_devices))
+    enumerate_sound_devices!() # Gets OS permissions and scans available sound devices
+    all_devices = list_sound_devices() # Displays available sound devices
+    # Getting raw (unprocessed) devices for input and output. Here it connects to the first numbered device it found.
+    input_device  = filter(d -> d.is_input && d.is_raw, all_devices)[1]
+    output_device = filter(d -> !d.is_input && d.is_raw, all_devices)[1]
     return input_device,output_device
 end
 
-function start_loop(input_stream,output_stream,)
-    input_sync  = input_stream.sync[].stream::FrozenAudioStream
+function start_loop(input_stream,output_stream)
+    input_sync  = input_stream.sync[].stream::FrozenAudioStream # Synchronizer that notifies status at every buffer atoom crossing.
+    # For simplicity we only track the input stream status. If required the output stream status can also be tracked but not part of this example.
     println("🎤 Starting Capture...")
-    start!(input_stream)
-    wait(input_sync)
+    start!(input_stream) # Starts capturing audio and storing into the buffer
+    wait(input_sync) # We wait till it sends the first notification (roughly buffer_atom_time + some δ ahead)
     println("🔊 Starting Playback (Real-Time Loopback)...")
-    start!(output_stream)
+    start!(output_stream) # Starts playing back audio
     try
         exchange::FrozenAudioExchange = @atomic input_sync.exchange
-        while exchange.status == CallbackJuliaDone
+        while exchange.status == CallbackJuliaDone # Poll the status and ensure it is stable
             wait(input_sync)
             exchange = @atomic input_sync.exchange
         end
     finally
         close(input_sync)
         destroy_sound_stream_unsafe(input_stream)
+        destroy_sound_stream_unsafe(output_stream)
     end
 end
 
 sampling_frequency = 48000
-buffer_atom_time = 0.5
-total_buffer_atoms = 10
-shared_data = zeros(Sample{2, Int16}, Int(buffer_atom_time * sampling_frequency), total_buffer_atoms)
+buffer_atom_time = 0.5 # Notifications are sent every buffer_atom_time seconds.
+total_buffer_atoms = 10 # It goes through 10 such cyles before looping back. (in many cases 2-3 is sufficient)
+shared_data = zeros(Sample{2, Int16}, Int(buffer_atom_time * sampling_frequency), total_buffer_atoms) # Pre allocate the array for buffering.
 
 input_device, output_device = get_sound_devices()
+# Opening streams. This gets connections to a sound device and ensures the device is active. Opening a stream with this API locks the shared_data array from being garbage collected.
 input_stream  = open(input_device,  (shared_data, false), sampling_frequency)
 output_stream = open(output_device, (shared_data, false), sampling_frequency)
 
