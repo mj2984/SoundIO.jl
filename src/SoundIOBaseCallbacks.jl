@@ -41,7 +41,7 @@ function frozen_audio_callback(outstream_ptr::Ptr{StreamBaseType}, frames_min::C
     if frames_to_copy > 0
         source_ptr = source_ptr_base + (buffer.stream.atomic_frame_offset * bytes_per_frame) # layout.data_ptr + (stream.current_frame * Channels)
         data_bytes_to_copy = frames_to_copy * bytes_per_frame #data_to_copy = frames_to_copy * Channels # In Units of T
-        if(StreamBaseType == SoundIoOutputStream_C)
+        if(StreamBaseType === SoundIoOutputStream_C)
             unsafe_copyto!(destination_ptr, source_ptr, data_bytes_to_copy) #unsafe_copyto!(destination_ptr, source_ptr, data_to_copy)
         else
             unsafe_copyto!(source_ptr, destination_ptr, data_bytes_to_copy)
