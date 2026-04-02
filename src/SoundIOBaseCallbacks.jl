@@ -1,6 +1,8 @@
 @inline get_source_ptr_base(buffer::FrozenAudioBuffer{T,Channels,isatomic,isclearing}) where {T,Channels,isatomic,isclearing} = isatomic ? Ptr{UInt8}(buffer.layout.data_ptr) + buffer.stream.current_offset_base : Ptr{UInt8}(buffer.layout.data_ptr)
 @inline get_frames_to_copy(buffer::FrozenAudioBuffer{T,Channels,isatomic,isclearing},actual_frames::Int) where {T,Channels,isatomic,isclearing} = min(actual_frames, buffer.layout.atom_frames - buffer.stream.atomic_frame_offset)
 # TODO:: underrun as type parameter.exit_on_underrun 
+@inline stream_direction_transfer!(destination_ptr,source_ptr,data_bytes_to_copy,::Type{SoundIoInputStream_C}) = unsafe_copyto!(source_ptr, destination_ptr, data_bytes_to_copy)
+@inline stream_direction_transfer!(destination_ptr,source_ptr,data_bytes_to_copy,::Type{SoundIoOutputStream_C}) = unsafe_copyto!(destination_ptr, source_ptr, data_bytes_to_copy)
 function frozen_audio_callback_boundary_handler!(::Type{StreamBaseType},buffer::FrozenAudioBuffer{T,Channels,isatomic,isclearing}, destination_ptr::Ptr{UInt8}, frames_copied::Int, actual_frames::Int, bytes_per_frame::Int) where {StreamBaseType,T,Channels,isatomic,isclearing} # Handle Silence / End-of-Buffer-Atom
     layout,stream = buffer.layout, buffer.stream
     exchange::FrozenAudioExchange = @atomic stream.exchange
@@ -17,11 +19,7 @@ function frozen_audio_callback_boundary_handler!(::Type{StreamBaseType},buffer::
             stream.current_offset_base = next_offset_base
         end
         next_atom_ptr = get_source_ptr_base(buffer)
-        if StreamBaseType === SoundIoOutputStream_C
-            unsafe_copyto!(starting_ptr, next_atom_ptr, pending_bytes)
-        else
-            unsafe_copyto!(next_atom_ptr, starting_ptr, pending_bytes)
-        end
+        stream_direction_transfer!(starting_ptr,next_atom_ptr,pending_bytes,StreamBaseType)
         if isclearing
             ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), next_atom_ptr, 0, pending_bytes)
         end
@@ -41,11 +39,7 @@ function frozen_audio_callback(outstream_ptr::Ptr{StreamBaseType}, frames_min::C
     if frames_to_copy > 0
         source_ptr = source_ptr_base + (buffer.stream.atomic_frame_offset * bytes_per_frame) # layout.data_ptr + (stream.current_frame * Channels)
         data_bytes_to_copy = frames_to_copy * bytes_per_frame #data_to_copy = frames_to_copy * Channels # In Units of T
-        if(StreamBaseType === SoundIoOutputStream_C)
-            unsafe_copyto!(destination_ptr, source_ptr, data_bytes_to_copy) #unsafe_copyto!(destination_ptr, source_ptr, data_to_copy)
-        else
-            unsafe_copyto!(source_ptr, destination_ptr, data_bytes_to_copy)
-        end
+        stream_direction_transfer!(destination_ptr, source_ptr, data_bytes_to_copy, StreamBaseType) #unsafe_copyto!(destination_ptr, source_ptr, data_to_copy)
         if isclearing
             ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), source_ptr, 0, data_bytes_to_copy)
         end
