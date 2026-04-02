@@ -58,7 +58,7 @@ Beyond audio, SoundIO.jl acts as a high-performance synchronous data transport l
 ---
 
 ## 📦 Quick Start
-SoundIO.jl manages backend connections automatically. Use `with_context` for a clean ownership model:
+The code below shows how to connect to input and output devices and perform a loopback, using user defined arrays (using the Frozen Audio Buffer infrastructure)
 
 ```julia
 using SamplesCore, SoundIO
