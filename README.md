@@ -102,5 +102,5 @@ input_device, output_device = get_sound_devices()
 input_stream  = open(input_device,  (shared_data, false), sampling_frequency)
 output_stream = open(output_device, (shared_data, false), sampling_frequency)
 
-start_loop(input_stream,output_stream)
+Threads.@spawn start_loop(input_stream,output_stream)
 # At any moment you could peek into shared_data and see the actual data.
