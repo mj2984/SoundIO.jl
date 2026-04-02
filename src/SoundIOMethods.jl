@@ -4,7 +4,7 @@
 @inline function get_audio_buffer(stream_ptr::Ptr{StreamBaseType}, ::Type{BufType}) where {StreamBaseType,BufType}
     userdata_ptr_ptr = convert(Ptr{Ptr{Cvoid}}, stream_ptr + userdata_offset(StreamBaseType)) # Optimized: Jump directly to userdata to bypass the expensive unsafe_load(output_stream_ptr)
     typed_ref_ptr = convert(Ptr{Base.RefValue{BufType}}, unsafe_load(userdata_ptr_ptr))
-    return unsafe_load(typed_ref_ptr)[]
+    return unsafe_load(typed_ref_ptr)[]::BufType
     #buffer_ref = unsafe_pointer_to_objref(raw_buffer_ptr)::Ref{BufType}
     #return buffer_ref[]::BufType
     #return unsafe_pointer_to_objref(raw_buffer_ptr).x::BufType
@@ -19,7 +19,7 @@ end
     areas_ref = Ref{Ptr{SoundIoChannelArea_C}}()
     frames_ref = Ref{Cint}(requested_frames) # Frames ref is both an input and output to soundio_outstream_begin_write_ptr. frames_max, frames_min is input from sound driver in the OS. User chooses a frame size based on this and the function checks and returns available memory (updates in place).
     negotiate_callback_buffer_space_base!(areas_ref,frames_ref,stream_ptr)
-    if(StreamBaseType == SoundIoInputStream_C)
+    if(StreamBaseType === SoundIoInputStream_C)
         ptr = areas_ref[]
         actual_ptr = (ptr != C_NULL) ? unsafe_load(ptr).ptr : convert(Ptr{UInt8}, C_NULL)
         return actual_ptr, Int(frames_ref[]::Cint)
