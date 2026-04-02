@@ -3,10 +3,11 @@
 @inline userdata_offset(::Type{SoundIoOutputStream_C}) = SOUNDIO_OUTPUTSTREAM_USERDATA_OFFSET
 @inline function get_audio_buffer(stream_ptr::Ptr{StreamBaseType}, ::Type{BufType}) where {StreamBaseType,BufType}
     userdata_ptr_ptr = convert(Ptr{Ptr{Cvoid}}, stream_ptr + userdata_offset(StreamBaseType)) # Optimized: Jump directly to userdata to bypass the expensive unsafe_load(output_stream_ptr)
-    raw_buffer_ptr   = unsafe_load(userdata_ptr_ptr)
+    typed_ref_ptr = convert(Ptr{Base.RefValue{BufType}}, unsafe_load(userdata_ptr_ptr))
+    return unsafe_load(typed_ref_ptr)[]
     #buffer_ref = unsafe_pointer_to_objref(raw_buffer_ptr)::Ref{BufType}
     #return buffer_ref[]::BufType
-    return unsafe_pointer_to_objref(raw_buffer_ptr).x::BufType
+    #return unsafe_pointer_to_objref(raw_buffer_ptr).x::BufType
     #=
     output_stream = unsafe_load(output_stream_ptr)
     buffer = unsafe_pointer_to_objref(output_stream.userdata)
@@ -211,19 +212,19 @@ function reopen!(stream::SoundIOStream)
     open_sound_stream_error_check(result)
     return nothing
 end
-function update_callback_status_message(stream::FrozenAudioStream,status::Int8)
+@inline function update_callback_status_message(stream::FrozenAudioStream,status::Int8)
     exchange = @atomic stream.exchange
     @atomic stream.exchange = FrozenAudioExchange(exchange.elapsed_frame_bytes,exchange.elapsed_atoms,status)
     return nothing
 end
-update_callback_status_message(sync::FrozenAudioBuffer,status::Int8) = update_callback_status_message(sync.stream,status)
+@inline update_callback_status_message(sync::FrozenAudioBuffer,status::Int8) = update_callback_status_message(sync.stream,status)
 function update_callback_status_message(sync::AudioCallbackSynchronizer,status::Int8)
     message::AudioCallbackMessage = @atomic sync.message
     @atomic sync.message = AudioCallbackMessage(status,message.data_ptr,message.actual_frames)
     return nothing
 end
-start_base(stream::SoundIOStream{SoundIoInputStream_C, T}) where {T} = ccall((:soundio_instream_start, libsoundio), Cint, (Ptr{Cvoid},), stream.ptr)
-start_base(stream::SoundIOStream{SoundIoOutputStream_C, T}) where {T} = ccall((:soundio_outstream_start, libsoundio), Cint, (Ptr{Cvoid},), stream.ptr)
+@inline start_base(stream::SoundIOStream{SoundIoInputStream_C, T}) where {T} = ccall((:soundio_instream_start, libsoundio), Cint, (Ptr{Cvoid},), stream.ptr)
+@inline start_base(stream::SoundIOStream{SoundIoOutputStream_C, T}) where {T} = ccall((:soundio_outstream_start, libsoundio), Cint, (Ptr{Cvoid},), stream.ptr)
 function start!(stream::SoundIOStream{S, T}) where {S,T}
     update_callback_status_message(stream.sync[],CallbackJuliaDone)
     result = start_base(stream)
