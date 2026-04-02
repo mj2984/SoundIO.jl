@@ -1,7 +1,7 @@
 name = "SoundIO"
 uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 authors = ["Manuel Jenkin Jerome <mj2984@columbia.edu>"]
-version = "0.1.6"
+version = "0.1.7"
 description = "Julia-native bindings to libsoundio for low-latency audio."
 license = "MIT"
 
