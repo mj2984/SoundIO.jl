@@ -153,6 +153,7 @@ stream = open_sound_stream(
 
 # 3. Start the hardware clock
 start!(stream)
+```
 ## 🧠 Automation with Multiple Dispatch
 
 Because `SoundIO.jl` leverages Julia's dispatch system, you can create convenient `Base.open` wrappers. This allows the library to automatically infer parameters from your data structures:
@@ -172,6 +173,7 @@ function Base.open(device::SoundIODevice, data::AbstractArray{T, N}, sample_rate
     # argument to ensure GC safety while the hardware thread is active.
     return open_sound_stream(device, data, frozen_audio_callback, data, sample_rate, :Float32Little)
 end
+```
 ## 🛡️ Developer Best Practices for the "Hot Path"
 
 To ensure your custom transport layer maintains native-level performance and avoids audio glitches (stutters), follow these core recommendations when writing callbacks:
