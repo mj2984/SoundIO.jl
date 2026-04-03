@@ -1,120 +1,182 @@
-# SoundIO.jl Developer Guide
+# 🛠️ Developer Guide: Custom Transport Layers
 
-This guide explains the internal mechanics of SoundIO.jl: how callbacks are generated, how streams work, and how synchronization is handled.
-
----
-
-## 1. Streams
-
-Streams wrap libsoundio’s input/output stream objects.
-
-### Output Streams
-`SoundIOOutStream` contains:
-- the raw C pointer  
-- format, sample rate, channel layout  
-- the Julia callback  
-- buffer state  
-- GC preservation handles  
-
-### Input Streams
-`SoundIOInStream` mirrors the same structure for input.
-
-Streams are opened using:
-~~~julia
-open(device)
-~~~
-
-and closed with:
-~~~julia
-close(stream)
-~~~
+SoundIO.jl is built to be extended. While the **Frozen Audio Buffer** is the built-in "Flow" model, the infrastructure allows you to define your own synchronization logic—like lock-free ring buffers or reactive DSP pipes—by subtyping `SoundIOSynchronizer`.
 
 ---
 
-## 2. Callback Generation
+## 🏗️ The Blueprint
 
-Callbacks are created using type specialization:
+To create a custom transport layer, you need:
+1.  **A Synchronizer Struct**: A type that subtypes `SoundIOSynchronizer`.
+2.  **A Callback Function**: A performance-critical function for the hardware thread.
 
-~~~julia
-cb = make_sound_output_callback(stream, userfunc)
-stream.write_callback = cb
-~~~
+### 🔬 Case Study: How `FrozenAudioBuffer` is Implemented
 
-### How it works
-- The function specializes on the concrete stream type.  
-- A closure is created that captures:
-  - the stream  
-  - the user’s Julia function  
-  - any additional state  
-- The closure is converted into a C-callable function pointer.  
-- libsoundio invokes this pointer from the audio thread.  
+The `FrozenAudioBuffer` is our reference implementation. It uses **Type-Specialization** and **Multiple Dispatch** to eliminate branches, ensuring the CPU spends its time moving data rather than checking logic.
 
-### Why this is fast
-- No dynamic dispatch inside the callback  
-- No symbol lookups  
-- No heap allocations  
-- The compiler can inline aggressively  
+#### 1. Symmetric Data Transfer
+We use a specialized helper so that a single implementation handles both Recording and Playback. Since `StreamBaseType` is known at compile-time, the compiler generates the correct copy direction without a runtime `if`.
 
-### Why this is safe
-- The stream wrapper enforces correct usage  
-- Buffers are wrapped in `GC.@preserve`  
-- Errors are surfaced as Julia symbols  
-- Users can still access raw pointers if needed  
+```julia
+# resolves to: hardware_ptr -> julia_ptr
+@inline stream_direction_transfer!(dest, src, bytes, ::Type{SoundIoInputStream_C}) = 
+    unsafe_copyto!(src, dest, bytes)
 
----
+# resolves to: julia_ptr -> hardware_ptr
+@inline stream_direction_transfer!(dest, src, bytes, ::Type{SoundIoOutputStream_C}) = 
+    unsafe_copyto!(dest, src, bytes)
+```
+#### 2. The Boundary Handler (Logic & Sync)
+This function manages the "rollover" when we reach the end of a buffer slice (an "atom"). It updates the atomic state and notifies the Julia event loop that a segment is complete.
+```julia
+function frozen_audio_callback_boundary_handler!(::Type{StreamBaseType}, 
+    buffer::FrozenAudioBuffer{T,Channels,isatomic,isclearing}, 
+    destination_ptr::Ptr{UInt8}, frames_copied::Int, 
+    actual_frames::Int, bytes_per_frame::Int) where {StreamBaseType,T,Channels,isatomic,isclearing}
+    
+    layout, stream = buffer.layout, buffer.stream
+    exchange::FrozenAudioExchange = @atomic stream.exchange
+    
+    pending_frames = actual_frames - frames_copied
+    starting_ptr = destination_ptr + (frames_copied * bytes_per_frame)
+    pending_bytes = pending_frames * bytes_per_frame
+    elapsed_atoms::Int = isatomic ? exchange.elapsed_atoms + 1 : 0
+    stream.atomic_frame_offset = pending_frames
+    
+    return_status::Int8 = exchange.status
 
-## 3. Synchronization
+    # If Julia has signaled we are still running
+    if return_status == CallbackJuliaDone
+        if isatomic
+            atom_bytes = layout.atom_frames * bytes_per_frame
+            # Wrap pointer base back to 0 if we hit the end of the total buffer
+            next_offset_base = (stream.current_offset_base + atom_bytes) % (layout.total_atoms * atom_bytes)
+            stream.current_offset_base = next_offset_base
+        end
+        
+        # Transfer the remaining frames from the START of the next atom
+        next_atom_ptr = get_source_ptr_base(buffer)
+        stream_direction_transfer!(starting_ptr, next_atom_ptr, pending_bytes, StreamBaseType)
+        
+        if isclearing
+            ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), next_atom_ptr, 0, pending_bytes)
+        end
+    else
+        # If the stream was stopped, fill the hardware buffer with silence
+        return_status = CallbackStopped
+        ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), starting_ptr, 0, pending_bytes)
+    end
 
-libsoundio uses a high-priority audio thread.  
-SoundIO.jl bridges this with Julia tasks using two mechanisms:
+    # 🔄 ATOMIC UPDATE: Sync state back to the Julia side
+    @atomic stream.exchange = FrozenAudioExchange(pending_frames, elapsed_atoms, return_status)
+    
+    # 🔔 NOTIFY: Wake up the Julia event loop (via libuv)
+    ccall(:uv_async_send, Cint, (Ptr{Cvoid},), stream.notify_handle.handle)
+end
+```
+#### 3. The Main Callback
+The entry point orchestrating negotiation, transfer, and boundary checks.
+```julia
+function frozen_audio_callback(stream_ptr::Ptr{StreamBaseType}, 
+                               f_min::Cint, f_max::Cint, 
+                               buffer::FrozenAudioBuffer{T,Channels,isatomic,isclearing}) where {StreamBaseType,T,Channels,isatomic,isclearing}
+    
+    bytes_per_frame::Int = Channels * sizeof(T)
 
-### Fast Wait
-~~~julia
-wait(context)
-wait(device)
-~~~
+    # 1. Hardware Negotiation
+    buffer_ptr, actual_frames::Int = negotiate_callback_buffer_space(stream_ptr, f_max)
+    
+    # 2. Pointer Setup
+    source_ptr_base = get_source_ptr_base(buffer)
+    destination_ptr = Base.unsafe_convert(Ptr{UInt8}, buffer_ptr) 
+    
+    # 3. Main Transfer
+    frames_to_copy::Int = get_frames_to_copy(buffer, actual_frames)
+    
+    if frames_to_copy > 0
+        source_ptr = source_ptr_base + (buffer.stream.atomic_frame_offset * bytes_per_frame)
+        data_bytes_to_copy = frames_to_copy * bytes_per_frame
+        
+        # Symmetric copy: direction resolved at compile-time
+        stream_direction_transfer!(destination_ptr, source_ptr, data_bytes_to_copy, StreamBaseType)
+        
+        if isclearing
+            ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), source_ptr, 0, data_bytes_to_copy)
+        end
+        buffer.stream.atomic_frame_offset += frames_to_copy
+    end
 
-Used for:
-- real-time synthesis  
-- pinned-thread workers  
-- low-latency loops  
+    # 4. Handle Rollover
+    if frames_to_copy < actual_frames
+        frozen_audio_callback_boundary_handler!(StreamBaseType, buffer, destination_ptr, frames_to_copy, actual_frames, bytes_per_frame)
+    end
 
-### Event-Driven Wait
-Callbacks trigger Julia tasks at lower frequency.
+    # 5. Commit to OS
+    commit_callback_buffer!(stream_ptr)
+    return nothing
+end
+```
+## 🚦 Managing Stream State & Notifications
 
-Useful for:
-- GUIs  
-- monitoring  
-- asynchronous pipelines  
+When building a custom transport, you must ensure that your synchronizer can receive state updates from the engine (e.g., when a stream starts, stops, or errors).
 
----
+### Implementing the Status Handshake
+The engine calls `update_callback_status_message` to synchronize the Julia-side intent with the hardware thread's state. You must define this method for your custom synchronizer to ensure `start!(stream)` works correctly.
 
-## 4. Threaded Workers
+```julia
+# Example: How FrozenAudioBuffer handles status updates atomically
+@inline function update_callback_status_message(sync::MyCustomBuffer, status::Int8)
+    # We use @atomic to ensure the audio thread sees the state change immediately
+    exchange = @atomic sync.exchange
+    @atomic sync.exchange = MyExchange(exchange.progress, status)
+    return nothing
+end
+```
+## 🚀 Attaching Your Custom Layer
 
-A worker task can be pinned to a specific Julia thread:
+To launch a custom layer, use the high-level `open_sound_stream` method. It handles the `@cfunction` generation and **GC Anchoring** automatically.
 
-~~~julia
-task = @task audio_streamer(sync, data)
-ccall(:jl_set_task_tid, Cvoid, (Any, Int16), task, 5)
-task.sticky = true
-schedule(task)
-~~~
+```julia
+# 1. Instantiate your custom synchronizer
+my_sync = MyCustomBuffer(zeros(Float32, 1024), CallbackJuliaDone)
 
-The audio callback signals the worker via `AudioCallbackSynchronizer`.
+# 2. Open the stream
+# 'my_sync.data' is preserved to ensure the GC doesn't move it during playback
+stream = open_sound_stream(
+    device, 
+    my_sync, 
+    frozen_audio_callback, 
+    my_sync.data, 
+    44100, 
+    :Float32Little
+)
 
----
+# 3. Start the hardware clock
+start!(stream)
+## 🧠 Automation with Multiple Dispatch
 
-## 5. Extending SoundIO.jl
+Because `SoundIO.jl` leverages Julia's dispatch system, you can create convenient `Base.open` wrappers. This allows the library to automatically infer parameters from your data structures:
 
-You can extend the system by defining new methods on existing types:
-- custom stream wrappers  
-- ring buffers  
-- DSP pipelines  
-- alternate callback generators  
-- async processors  
+```julia
+function Base.open(device::SoundIODevice, data::AbstractArray{T, N}, sample_rate::Integer) where {T, N}
+    # Validate that memory is contiguous for unsafe pointers
+    if !is_pointer_safe(data)
+        error("Non-contiguous arrays (slices) are not supported.")
+    end
+    
+    # Calculate dimensions for the synchronizer
+    channels = size(data, 1)
+    frames = size(data, 2)
+    
+    # 'data' is passed twice: once as the source and once to the 'preserve' 
+    # argument to ensure GC safety while the hardware thread is active.
+    return open_sound_stream(device, data, frozen_audio_callback, data, sample_rate, :Float32Little)
+end
+## 🛡️ Developer Best Practices for the "Hot Path"
 
-The architecture is intentionally minimal to support this.
+To ensure your custom transport layer maintains native-level performance and avoids audio glitches (stutters), follow these core recommendations when writing callbacks:
 
----
-
-MIT License.
+*   **Zero-Allocation Logic:** The audio thread must never trigger Julia's Garbage Collector. Avoid creating arrays, strings, dictionaries, or any other heap-allocated objects.
+*   **Static Type Stability:** Always use `where {T, ...}` in your callback signature. This ensures the compiler can statically resolve all types, eliminating dynamic dispatch and generating optimized, branchless machine code.
+*   **Memory Anchoring (GC Safety):** Because hardware threads access memory outside of Julia's awareness, always use the `preserve` argument in `open_sound_stream`. This anchors your data buffers and prevents the GC from moving or reclaiming them while the stream is active.
+*   **Event Loop Signaling:** Use `ccall(:uv_async_send, ...)` to communicate with the rest of your application. This safely signals the Julia event loop from the hardware thread, allowing your main tasks to respond to stream events without blocking the audio clock.
