@@ -59,7 +59,7 @@ Threads.@spawn start_loop(input_stream,output_stream)
 ```
 
 2. Playing Wav files
-```
+```julia
 using SamplesCore, WavNative, SoundIO
 function play_audio(audio_data::AbstractArray{T}, sample_rate::Integer, device::SoundIODevice) where {T<:Union{Number,Sample}}
     stream = open(device, (audio_data, false), sample_rate) # The stream captures the audio data from being Garbage collected.
