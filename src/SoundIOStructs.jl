@@ -14,11 +14,11 @@ mutable struct SoundIORingBuffer
 end
 =#
 # --- Playback Logic ---
-struct FrozenAudioLayout{T,isatomic,isclearing} # The "Map": Immutable description of the static memory
+struct FrozenAudioLayout{T<:Sample,isatomic,isclearing} # The "Map": Immutable description of the static memory
     data_ptr::Ptr{T}
     atom_frames::Int
     total_atoms::Int
-    FrozenAudioLayout(data_ptr::Ptr{T},atom_dimensions::NTuple{2,Int},isclearing::Bool) where {T} = new{T,atom_dimensions[2]!=1,isclearing}(data_ptr,atom_dimensions...)
+    FrozenAudioLayout(data_ptr::Ptr{T},atom_dimensions::NTuple{2,Int},isclearing::Bool) where {T<:Sample} = new{T,atom_dimensions[2]!=1,isclearing}(data_ptr,atom_dimensions...)
 end
 struct FrozenAudioExchange
     elapsed_frame_bytes::Int
@@ -33,14 +33,14 @@ mutable struct FrozenAudioStream # The "Engine": Mutable state for the active pl
     FrozenAudioStream() = new(0, 0, FrozenAudioExchange(0, 0, CallbackStopped), Base.AsyncCondition())
 end
 abstract type SoundIOSynchronizer end
-struct FrozenAudioBuffer{T,Channels,isatomic,isclearing} <: SoundIOSynchronizer # The "Container": The single object we track in Julia
+struct FrozenAudioBuffer{T<:Sample,isatomic,isclearing} <: SoundIOSynchronizer # The "Container": The single object we track in Julia
     layout::FrozenAudioLayout{T,isatomic,isclearing}
     stream::FrozenAudioStream
-    function FrozenAudioBuffer(ptr::Ptr{T}, specification_dimensions::Tuple{Integer, Integer,Integer}, isclearing::Bool) where {T}
-        Channels::Int, atom_frames::Int, total_atoms::Int = specification_dimensions
+    function FrozenAudioBuffer(ptr::Ptr{T}, specification_dimensions::Tuple{Integer,Integer}, isclearing::Bool) where {T<:Sample}
+        atom_frames::Int, total_atoms::Int = specification_dimensions
         layout = FrozenAudioLayout(ptr, (atom_frames, total_atoms), isclearing)
         stream = FrozenAudioStream()
-        return new{T,Channels,total_atoms!=1,isclearing}(layout, stream)
+        return new{T,total_atoms!=1,isclearing}(layout, stream)
     end
 end
 struct AudioCallbackMessage
