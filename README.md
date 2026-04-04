@@ -69,6 +69,7 @@ The following example demonstrates a **deterministic, bidirectional loopback** u
 
 ### 📦 Example Code
 
+1. Loopback test.
 ```julia
 using SamplesCore, SoundIO
 function get_sound_devices()
@@ -113,6 +114,39 @@ output_stream = open(output_device, (shared_data, false), sampling_frequency)
 
 Threads.@spawn start_loop(input_stream,output_stream)
 # At any moment you could peek into shared_data and see the actual data.
+```
+
+2. Playing Wav files
+```julia
+using SamplesCore, WavNative, SoundIO
+function play_audio(audio_data::AbstractArray{T}, sample_rate::Integer, device::SoundIODevice) where {T<:Union{Number,Sample}}
+    stream = open(device, (audio_data, false), sample_rate) # The stream captures the audio data from being Garbage collected.
+    buffer_stream = stream.sync[].stream::FrozenAudioStream
+    start!(stream) #println("🔊 Playback started. Press Ctrl+C to stop.")
+    try
+        exchange::FrozenAudioExchange = @atomic buffer_stream.exchange
+        while exchange.status == CallbackJuliaDone
+            wait(buffer_stream)
+            exchange = @atomic buffer_stream.exchange
+        end
+    finally
+        close(buffer_stream)
+        destroy_sound_stream_unsafe(stream) # Stop stream playback when done or interrupted
+        #filter!(s -> s != stream_ptr, ctx.streams)
+    end
+end
+
+function play_music(sound_file::String,audio_device::SoundIODevice)
+    audio_data,sample_rate = audioread(sound_file,false)
+    play_audio(audio_data,Int(sample_rate),audio_device)
+end
+
+sound_file = raw"sound_file.wav"
+enumerate_sound_devices!()
+audio_device = filter(d -> (!d.is_input) & (d.is_raw), list_sound_devices())[1]
+println("🎶 Playing: $sound_file")
+play_music(sound_file,audio_device)
+println("Finished!")
 ```
 More demo code can be found at \test
 
