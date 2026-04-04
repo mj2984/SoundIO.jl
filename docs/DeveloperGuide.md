@@ -129,7 +129,7 @@ function frozen_audio_callback_boundary_handler!(::Type{StreamBaseType},
             next_offset_base = (stream.current_offset_base + layout.atom_frames) % (layout.total_atoms * layout.atom_frames)
             stream.current_offset_base = next_offset_base
         end
-        
+        # Transfer the remaining frames from the START of the next atom
         next_atom_ptr = get_source_ptr_base(buffer)
         stream_direction_transfer!(starting_ptr, next_atom_ptr, pending_frames, StreamBaseType)
         
@@ -138,6 +138,7 @@ function frozen_audio_callback_boundary_handler!(::Type{StreamBaseType},
         end
     else
         return_status = CallbackStopped
+        # If the stream was stopped, fill the hardware buffer with silence
         stream_space_reset!(starting_ptr, pending_frames)
     end
 
