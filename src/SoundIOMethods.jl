@@ -27,6 +27,10 @@ end
         return unsafe_load(areas_ref[]).ptr, Int(frames_ref[]::Cint) # Note: unsafe_load(areas_ref[]) returns a SoundIoChannelArea_C
     end
 end
+@inline function negotiate_callback_buffer_space(stream_ptr::Ptr{StreamBaseType}, requested_frames::Cint, ::Type{Sample{Channels, T}}) where {StreamBaseType, Channels, T}
+    raw_ptr, actual_frames = negotiate_callback_buffer_space(stream_ptr, requested_frames)
+    return convert(Ptr{Sample{Channels, T}}, raw_ptr), actual_frames
+end
 @inline commit_callback_buffer!(stream_ptr::Ptr{SoundIoInputStream_C}) = ccall((:soundio_instream_end_read,libsoundio), Cint, (Ptr{Cvoid},), stream_ptr)
 @inline commit_callback_buffer!(stream_ptr::Ptr{SoundIoOutputStream_C}) = ccall((:soundio_outstream_end_write,libsoundio), Cint, (Ptr{Cvoid},), stream_ptr)
 function make_audio_callback(::Type{StreamBaseType},::Type{BufType}, callback_function::F) where {StreamBaseType,BufType<:SoundIOSynchronizer, F<:Function}
