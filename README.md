@@ -115,3 +115,13 @@ Threads.@spawn start_loop(input_stream,output_stream)
 # At any moment you could peek into shared_data and see the actual data.
 ```
 More demo code can be found at \test
+
+### Acknowledgments
+
+I would like to thank:
+
+Andrew Kelley, the developer of libsoundio, for such a fantastic and robust C library.
+
+The Images.jl developers for providing the architectural guidance and the concept of literate programming that inspired this ecosystem.
+
+The Julia developers for creating such an awesome language that truly allows us to “have our cake and eat it too”—achieving high-level expressiveness without sacrificing low-level performance.
