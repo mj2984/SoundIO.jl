@@ -55,89 +55,76 @@ end
 This function manages the "rollover" when we reach the end of a buffer slice (an "atom"). It updates the atomic state and notifies the Julia event loop that a segment is complete.
 ```julia
 function frozen_audio_callback_boundary_handler!(::Type{StreamBaseType}, 
-    buffer::FrozenAudioBuffer{T,Channels,isatomic,isclearing}, 
-    destination_ptr::Ptr{UInt8}, frames_copied::Int, 
-    actual_frames::Int, bytes_per_frame::Int) where {StreamBaseType,T,Channels,isatomic,isclearing}
+    buffer::FrozenAudioBuffer{T,isatomic,isclearing}, 
+    destination_ptr::Ptr{T}, frames_copied::Int, 
+    actual_frames::Int) where {StreamBaseType,T,isatomic,isclearing}
     
     layout, stream = buffer.layout, buffer.stream
     exchange::FrozenAudioExchange = @atomic stream.exchange
     
     pending_frames = actual_frames - frames_copied
-    starting_ptr = destination_ptr + (frames_copied * bytes_per_frame)
-    pending_bytes = pending_frames * bytes_per_frame
+    # Manual byte-scaling: destination_ptr + (offset * bytes_per_element)
+    starting_ptr = destination_ptr + (frames_copied * sizeof(T))
+    
     elapsed_atoms::Int = isatomic ? exchange.elapsed_atoms + 1 : 0
     stream.atomic_frame_offset = pending_frames
-    
     return_status::Int8 = exchange.status
 
-    # If Julia has signaled we are still running
     if return_status == CallbackJuliaDone
         if isatomic
-            atom_bytes = layout.atom_frames * bytes_per_frame
-            # Wrap pointer base back to 0 if we hit the end of the total buffer
-            next_offset_base = (stream.current_offset_base + atom_bytes) % (layout.total_atoms * atom_bytes)
+            # Wrap offset back to 0 if we hit the end of the total buffer
+            next_offset_base = (stream.current_offset_base + layout.atom_frames) % (layout.total_atoms * layout.atom_frames)
             stream.current_offset_base = next_offset_base
         end
         
         # Transfer the remaining frames from the START of the next atom
         next_atom_ptr = get_source_ptr_base(buffer)
-        stream_direction_transfer!(starting_ptr, next_atom_ptr, pending_bytes, StreamBaseType)
+        stream_direction_transfer!(starting_ptr, next_atom_ptr, pending_frames, StreamBaseType)
         
         if isclearing
-            ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), next_atom_ptr, 0, pending_bytes)
+            stream_space_reset!(next_atom_ptr, pending_frames)
         end
     else
         # If the stream was stopped, fill the hardware buffer with silence
         return_status = CallbackStopped
-        ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), starting_ptr, 0, pending_bytes)
+        stream_space_reset!(starting_ptr, pending_frames)
     end
 
-    # 🔄 ATOMIC UPDATE: Sync state back to the Julia side
+    # 🔄 ATOMIC UPDATE: Sync state and notify Julia (via libuv)
     @atomic stream.exchange = FrozenAudioExchange(pending_frames, elapsed_atoms, return_status)
-    
-    # 🔔 NOTIFY: Wake up the Julia event loop (via libuv)
     ccall(:uv_async_send, Cint, (Ptr{Cvoid},), stream.notify_handle.handle)
 end
 ```
 #### 3. The Main Callback
 The entry point orchestrating negotiation, transfer, and boundary checks.
 ```julia
-function frozen_audio_callback(stream_ptr::Ptr{StreamBaseType}, 
+function frozen_audio_callback(outstream_ptr::Ptr{StreamBaseType}, 
                                f_min::Cint, f_max::Cint, 
-                               buffer::FrozenAudioBuffer{T,Channels,isatomic,isclearing}) where {StreamBaseType,T,Channels,isatomic,isclearing}
+                               buffer::FrozenAudioBuffer{T,isatomic,isclearing}) where {StreamBaseType,T,isatomic,isclearing}
     
-    bytes_per_frame::Int = Channels * sizeof(T)
-
     # 1. Hardware Negotiation
-    buffer_ptr, actual_frames::Int = negotiate_callback_buffer_space(stream_ptr, f_max)
+    destination_ptr, actual_frames::Int = negotiate_callback_buffer_space(outstream_ptr, f_max, T)
     
     # 2. Pointer Setup
-    source_ptr_base = get_source_ptr_base(buffer)
-    destination_ptr = Base.unsafe_convert(Ptr{UInt8}, buffer_ptr) 
-    
-    # 3. Main Transfer
+    source_ptr = get_source_ptr(buffer)
     frames_to_copy::Int = get_frames_to_copy(buffer, actual_frames)
     
+    # 3. Main Transfer
     if frames_to_copy > 0
-        source_ptr = source_ptr_base + (buffer.stream.atomic_frame_offset * bytes_per_frame)
-        data_bytes_to_copy = frames_to_copy * bytes_per_frame
-        
-        # Symmetric copy: direction resolved at compile-time
-        stream_direction_transfer!(destination_ptr, source_ptr, data_bytes_to_copy, StreamBaseType)
-        
+        stream_direction_transfer!(destination_ptr, source_ptr, frames_to_copy, StreamBaseType)
         if isclearing
-            ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), source_ptr, 0, data_bytes_to_copy)
+            stream_space_reset!(source_ptr, frames_to_copy)
         end
         buffer.stream.atomic_frame_offset += frames_to_copy
     end
 
-    # 4. Handle Rollover
+    # 4. Handle Rollover (Boundary Logic)
     if frames_to_copy < actual_frames
-        frozen_audio_callback_boundary_handler!(StreamBaseType, buffer, destination_ptr, frames_to_copy, actual_frames, bytes_per_frame)
+        frozen_audio_callback_boundary_handler!(StreamBaseType, buffer, destination_ptr, frames_to_copy, actual_frames)
     end
 
     # 5. Commit to OS
-    commit_callback_buffer!(stream_ptr)
+    commit_callback_buffer!(outstream_ptr)
     return nothing
 end
 ```
