@@ -25,7 +25,52 @@ To simplify hardware interaction, the library provides two core functions that h
 - **`commit_callback_buffer!(stream_ptr)`**:
   Once your data transfer is complete, you **must** call this function. It notifies the OS that the buffer is ready for playback or has been processed.
 
-#### 2. Low-Level Utility Helpers
+#### 2. Data Structures
+The `FrozenAudioBuffer` is split into three parts to separate the **Memory Map** (Immutable), the **Engine State** (Mutable), and the **Atomic Exchange** (Thread-Sync).
+
+```julia
+# 1. The "Map": Immutable description of the static memory
+struct FrozenAudioLayout{T<:Sample,isatomic,isclearing} 
+    data_ptr::Ptr{T}
+    atom_frames::Int
+    total_atoms::Int
+    # isatomic is automatically determined: true if we have more than one buffer slice
+    FrozenAudioLayout(ptr::Ptr{T}, dims::NTuple{2,Int}, clearing::Bool) where {T} = 
+        new{T, dims[2]!=1, clearing}(ptr, dims...)
+end
+
+# 2. The "Exchange": Data packet for thread-safe status updates
+struct FrozenAudioExchange
+    elapsed_frame_bytes::Int
+    elapsed_atoms::Int
+    status::Int8
+end
+
+# 3. The "Engine": Mutable state for the active hardware thread
+mutable struct FrozenAudioStream 
+    atomic_frame_offset::Int
+    current_offset_base::Int
+    @atomic exchange::FrozenAudioExchange # Synchronized view updated at atom boundaries
+    notify_handle::Base.AsyncCondition     # Bridges C-thread to Julia event loop
+    
+    FrozenAudioStream() = new(0, 0, FrozenAudioExchange(0, 0, CallbackStopped), Base.AsyncCondition())
+end
+
+# 4. The "Container": The primary object tracked by Julia
+struct FrozenAudioBuffer{T<:Sample,isatomic,isclearing} <: SoundIOSynchronizer
+    layout::FrozenAudioLayout{T,isatomic,isclearing}
+    stream::FrozenAudioStream
+    
+    function FrozenAudioBuffer(ptr::Ptr{T}, dims::Tuple{Integer,Integer}, clearing::Bool) where {T}
+        atom_frames, total_atoms = Int.(dims)
+        layout = FrozenAudioLayout(ptr, (atom_frames, total_atoms), clearing)
+        stream = FrozenAudioStream()
+        return new{T, total_atoms!=1, clearing}(layout, stream)
+    end
+end
+```
+
+#### 3. Low-Level Utility Helpers
 We define small, `@inline` functions to handle pointer arithmetic and symmetric data transfer. These allow the main callback to remain readable while ensuring zero overhead.
 
 > **⚠️ Important Note on Pointer Arithmetic:** In Julia, `ptr + 1` moves by **1 byte**, not 1 element. We must manually multiply by `sizeof(T)`. However, `unsafe_copyto!` and `stream_space_reset!` (via `ccall`) work with **element counts** or **byte counts** respectively—precision here is key.
@@ -62,7 +107,7 @@ We define small, `@inline` functions to handle pointer arithmetic and symmetric 
     ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), ptr, 0, frames * sizeof(T))
 end
 ```
-#### 3. The Boundary Handler (Logic & Sync)
+#### 4. The Boundary Handler (Logic & Sync)
 This function manages the "rollover" when we reach the end of a buffer slice (an "atom"). It updates the atomic state and notifies the Julia event loop that a segment is complete.
 ```julia
 function frozen_audio_callback_boundary_handler!(::Type{StreamBaseType}, 
@@ -106,7 +151,7 @@ function frozen_audio_callback_boundary_handler!(::Type{StreamBaseType},
     ccall(:uv_async_send, Cint, (Ptr{Cvoid},), stream.notify_handle.handle)
 end
 ```
-#### 4. The Main Callback
+#### 5. The Main Callback
 The entry point orchestrating negotiation, transfer, and boundary checks.
 ```julia
 function frozen_audio_callback(outstream_ptr::Ptr{StreamBaseType}, 
