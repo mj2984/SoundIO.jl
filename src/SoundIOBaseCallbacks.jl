@@ -1,15 +1,18 @@
 @inline get_source_ptr_base(buffer::FrozenAudioBuffer{T,isatomic,isclearing}) where {T<:Sample,isatomic,isclearing} = isatomic ? buffer.layout.data_ptr + (buffer.stream.current_offset_base * sizeof(T)) : buffer.layout.data_ptr
-@inline get_source_ptr(buffer::FrozenAudioBuffer{T,isatomic,isclearing}) where {T<:Sample,isatomic,isclearing} = isatomic ? buffer.layout.data_ptr + ((buffer.stream.current_offset_base +buffer.stream.atomic_frame_offset) * sizeof(T)) : buffer.layout.data_ptr + (buffer.stream.atomic_frame_offset * sizeof(T))
+@inline get_source_ptr(buffer::FrozenAudioBuffer{T,isatomic,isclearing}) where {T<:Sample,isatomic,isclearing} = isatomic ? buffer.layout.data_ptr + ((buffer.stream.current_offset_base + buffer.stream.atomic_frame_offset) * sizeof(T)) : buffer.layout.data_ptr + (buffer.stream.atomic_frame_offset * sizeof(T))
 @inline get_frames_to_copy(buffer::FrozenAudioBuffer{T,isatomic,isclearing},actual_frames::Int) where {T<:Sample,isatomic,isclearing} = min(actual_frames, buffer.layout.atom_frames - buffer.stream.atomic_frame_offset)
 # TODO:: underrun as type parameter.exit_on_underrun 
 @inline stream_direction_transfer!(destination::Ptr{T},source::Ptr{T},frames_to_copy::Int,::Type{SoundIoInputStream_C}) where {T<:Sample} = unsafe_copyto!(source, destination, frames_to_copy)
 @inline stream_direction_transfer!(destination::Ptr{T},source::Ptr{T},frames_to_copy::Int,::Type{SoundIoOutputStream_C}) where {T<:Sample} = unsafe_copyto!(destination, source, frames_to_copy)
+@inline function stream_space_reset!(ptr::Ptr{T}, frames::Integer) where {T<:Sample}
+    ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), ptr, 0, frames * sizeof(T))
+    return
+end
 function frozen_audio_callback_boundary_handler!(::Type{StreamBaseType},buffer::FrozenAudioBuffer{T,isatomic,isclearing}, destination_ptr::Ptr{T}, frames_copied::Int, actual_frames::Int) where {StreamBaseType,T<:Sample,isatomic,isclearing} # Handle Silence / End-of-Buffer-Atom
     layout,stream = buffer.layout, buffer.stream
     exchange::FrozenAudioExchange = @atomic stream.exchange
     pending_frames = actual_frames - frames_copied
     starting_ptr = destination_ptr + (frames_copied * sizeof(T))
-    pending_bytes = pending_frames * sizeof(T)
     elapsed_atoms::Int = isatomic ? exchange.elapsed_atoms + 1 : 0
     stream.atomic_frame_offset = pending_frames
     return_status::Int8 = exchange.status
@@ -21,11 +24,11 @@ function frozen_audio_callback_boundary_handler!(::Type{StreamBaseType},buffer::
         next_atom_ptr = get_source_ptr_base(buffer)
         stream_direction_transfer!(starting_ptr,next_atom_ptr,pending_frames,StreamBaseType)
         if isclearing
-            ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), next_atom_ptr, 0, pending_bytes)
+            stream_space_reset!(next_atom_ptr,pending_frames)
         end
     else
         return_status = CallbackStopped
-        ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), starting_ptr, 0, pending_bytes)
+        stream_space_reset!(starting_ptr,pending_frames)
     end
     @atomic stream.exchange = FrozenAudioExchange(pending_frames, elapsed_atoms, return_status)
     ccall(:uv_async_send, Cint, (Ptr{Cvoid},), stream.notify_handle.handle)
@@ -37,8 +40,7 @@ function frozen_audio_callback(outstream_ptr::Ptr{StreamBaseType}, frames_min::C
     if frames_to_copy > 0
         stream_direction_transfer!(destination_ptr, source_ptr, frames_to_copy, StreamBaseType)
         if isclearing
-            data_bytes_to_copy = frames_to_copy * sizeof(T)
-            ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), source_ptr, 0, data_bytes_to_copy)
+            stream_space_reset!(source_ptr,frames_to_copy)
         end
         buffer.stream.atomic_frame_offset += frames_to_copy
     end
