@@ -14,7 +14,18 @@ To create a custom transport layer, you need:
 
 The `FrozenAudioBuffer` is our reference implementation. It uses **Type-Specialization** and **Multiple Dispatch** to eliminate branches, ensuring the CPU spends its time moving data rather than checking logic.
 
-#### 1. Low-Level Utility Helpers
+#### 1. Library Transport Functions
+To simplify hardware interaction, the library provides two core functions that handle the complex `Ref` management and C-interface requirements of **libsoundio**.
+
+- **`negotiate_callback_buffer_space(stream_ptr, requested_frames, T)`**: 
+  This is your entry point for every callback. It communicates with the OS sound driver to determine how much memory is actually available.
+  - **Inputs**: The hardware stream pointer, requested frame count, and sample type `T`.
+  - **Returns**: A tuple containing the typed pointer `Ptr{T}` to the hardware buffer and the `actual_frames` (Int) granted by the driver.
+  
+- **`commit_callback_buffer!(stream_ptr)`**:
+  Once your data transfer is complete, you **must** call this function. It notifies the OS that the buffer is ready for playback or has been processed.
+
+#### 2. Low-Level Utility Helpers
 We define small, `@inline` functions to handle pointer arithmetic and symmetric data transfer. These allow the main callback to remain readable while ensuring zero overhead.
 
 > **⚠️ Important Note on Pointer Arithmetic:** In Julia, `ptr + 1` moves by **1 byte**, not 1 element. We must manually multiply by `sizeof(T)`. However, `unsafe_copyto!` and `stream_space_reset!` (via `ccall`) work with **element counts** or **byte counts** respectively—precision here is key.
@@ -51,7 +62,7 @@ We define small, `@inline` functions to handle pointer arithmetic and symmetric 
     ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), ptr, 0, frames * sizeof(T))
 end
 ```
-#### 2. The Boundary Handler (Logic & Sync)
+#### 3. The Boundary Handler (Logic & Sync)
 This function manages the "rollover" when we reach the end of a buffer slice (an "atom"). It updates the atomic state and notifies the Julia event loop that a segment is complete.
 ```julia
 function frozen_audio_callback_boundary_handler!(::Type{StreamBaseType}, 
@@ -95,7 +106,7 @@ function frozen_audio_callback_boundary_handler!(::Type{StreamBaseType},
     ccall(:uv_async_send, Cint, (Ptr{Cvoid},), stream.notify_handle.handle)
 end
 ```
-#### 3. The Main Callback
+#### 4. The Main Callback
 The entry point orchestrating negotiation, transfer, and boundary checks.
 ```julia
 function frozen_audio_callback(outstream_ptr::Ptr{StreamBaseType}, 
