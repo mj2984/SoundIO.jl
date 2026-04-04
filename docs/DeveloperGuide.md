@@ -119,21 +119,17 @@ function frozen_audio_callback_boundary_handler!(::Type{StreamBaseType},
     exchange::FrozenAudioExchange = @atomic stream.exchange
     
     pending_frames = actual_frames - frames_copied
-    # Manual byte-scaling: destination_ptr + (offset * bytes_per_element)
     starting_ptr = destination_ptr + (frames_copied * sizeof(T))
-    
-    elapsed_atoms::Int = isatomic ? exchange.elapsed_atoms + 1 : 0
     stream.atomic_frame_offset = pending_frames
     return_status::Int8 = exchange.status
 
     if return_status == CallbackJuliaDone
         if isatomic
-            # Wrap offset back to 0 if we hit the end of the total buffer
+            # Wrap offset back to 0 at the end of the total loop
             next_offset_base = (stream.current_offset_base + layout.atom_frames) % (layout.total_atoms * layout.atom_frames)
             stream.current_offset_base = next_offset_base
         end
         
-        # Transfer the remaining frames from the START of the next atom
         next_atom_ptr = get_source_ptr_base(buffer)
         stream_direction_transfer!(starting_ptr, next_atom_ptr, pending_frames, StreamBaseType)
         
@@ -141,13 +137,12 @@ function frozen_audio_callback_boundary_handler!(::Type{StreamBaseType},
             stream_space_reset!(next_atom_ptr, pending_frames)
         end
     else
-        # If the stream was stopped, fill the hardware buffer with silence
         return_status = CallbackStopped
         stream_space_reset!(starting_ptr, pending_frames)
     end
 
-    # 🔄 ATOMIC UPDATE: Sync state and notify Julia (via libuv)
-    @atomic stream.exchange = FrozenAudioExchange(pending_frames, elapsed_atoms, return_status)
+    # 🔄 ATOMIC UPDATE: Increment atom count and sync status back to Julia
+    @atomic stream.exchange = FrozenAudioExchange(pending_frames, exchange.elapsed_atoms + 1, return_status)
     ccall(:uv_async_send, Cint, (Ptr{Cvoid},), stream.notify_handle.handle)
 end
 ```
