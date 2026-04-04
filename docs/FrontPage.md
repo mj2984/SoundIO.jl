@@ -75,7 +75,7 @@ end
 sampling_frequency = 48000
 buffer_atom_time = 0.5 # Notifications are sent every buffer_atom_time seconds.
 total_buffer_atoms = 10 # It goes through 10 such cyles before looping back. (in many cases 2-3 is sufficient)
-shared_data = zeros(Sample{2, Int16}, Int(buffer_atom_time * sampling_frequency), total_buffer_atoms) # Pre allocate the array for buffering.
+shared_data = zeros(Sample{2, Q0f15}, Int(buffer_atom_time * sampling_frequency), total_buffer_atoms) # Pre allocate the array for buffering.
 
 input_device, output_device = get_sound_devices()
 # Opening streams. This gets connections to a sound device and ensures the device is active. Opening a stream with this API locks the shared_data array from being garbage collected.
