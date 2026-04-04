@@ -13,7 +13,6 @@ function frozen_audio_callback_boundary_handler!(::Type{StreamBaseType},buffer::
     exchange::FrozenAudioExchange = @atomic stream.exchange
     pending_frames = actual_frames - frames_copied
     starting_ptr = destination_ptr + (frames_copied * sizeof(T))
-    elapsed_atoms::Int = isatomic ? exchange.elapsed_atoms + 1 : 0
     stream.atomic_frame_offset = pending_frames
     return_status::Int8 = exchange.status
     if return_status == CallbackJuliaDone
@@ -30,13 +29,13 @@ function frozen_audio_callback_boundary_handler!(::Type{StreamBaseType},buffer::
         return_status = CallbackStopped
         stream_space_reset!(starting_ptr,pending_frames)
     end
-    @atomic stream.exchange = FrozenAudioExchange(pending_frames, elapsed_atoms, return_status)
+    @atomic stream.exchange = FrozenAudioExchange(pending_frames, exchange.elapsed_atoms + 1, return_status)
     ccall(:uv_async_send, Cint, (Ptr{Cvoid},), stream.notify_handle.handle)
 end
 function frozen_audio_callback(outstream_ptr::Ptr{StreamBaseType}, frames_min::Cint, frames_max::Cint, buffer::FrozenAudioBuffer{T,isatomic,isclearing}) where {StreamBaseType,T<:Sample,isatomic,isclearing}
-    destination_ptr, actual_frames::Int = negotiate_callback_buffer_space(outstream_ptr, frames_max, T)
+    destination_ptr, actual_frames = negotiate_callback_buffer_space(outstream_ptr, frames_max, T)
     source_ptr = get_source_ptr(buffer)
-    frames_to_copy::Int = get_frames_to_copy(buffer, actual_frames)
+    frames_to_copy = get_frames_to_copy(buffer, actual_frames)
     if frames_to_copy > 0
         stream_direction_transfer!(destination_ptr, source_ptr, frames_to_copy, StreamBaseType)
         if isclearing
