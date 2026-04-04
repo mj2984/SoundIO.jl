@@ -180,6 +180,28 @@ function frozen_audio_callback(outstream_ptr::Ptr{StreamBaseType},
     return nothing
 end
 ```
+### ⚡ The Power of Type-Specialization
+By encoding properties like `isatomic` and `isclearing` into the **Type Parameters** of the struct, we enable Julia's compiler to perform **Dead Code Elimination**. Even though the source code contains `if` statements, the compiled machine code for a specific buffer does not.
+
+#### Example 1: Branch-Free Pointer Math
+Consider our `get_source_ptr` helper:
+```julia
+@inline get_source_ptr(buffer::FrozenAudioBuffer{T,isatomic}) where {T,isatomic} = 
+    isatomic ? buffer.layout.data_ptr + ((buffer.stream.current_offset_base + buffer.stream.atomic_frame_offset) * sizeof(T)) : 
+               buffer.layout.data_ptr + (buffer.stream.atomic_frame_offset * sizeof(T))
+```
+If you instantiate a FrozenAudioBuffer where isatomic = false (a simple linear buffer), Julia generates a unique version of this function where the isatomic check is evaluated at compile-time and the "true" branch is physically deleted from the binary. The result is a single, direct pointer addition with zero branching.
+
+#### Example 2: Eliminating Entire Function Calls
+The isclearing parameter works the same way. In the main callback, we have:
+```
+if isclearing
+    stream_space_reset!(source_ptr, frames_to_copy)
+end
+```
+If you define your buffer with isclearing = false, the compiler doesn't just skip the if; it never generates the code to call stream_space_reset!. The hardware thread won't even see the instructions for a ccall or a memset.
+This allows us to write a single, flexible codebase that performs as well as manually-tuned, specialized C code for every possible buffer configuration.
+
 ## 🚦 Managing Stream State & Notifications
 
 When building a custom transport, you must ensure that your synchronizer can receive state updates from the engine (e.g., when a stream starts, stops, or errors).
