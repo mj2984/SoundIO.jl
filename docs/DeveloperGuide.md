@@ -14,17 +14,42 @@ To create a custom transport layer, you need:
 
 The `FrozenAudioBuffer` is our reference implementation. It uses **Type-Specialization** and **Multiple Dispatch** to eliminate branches, ensuring the CPU spends its time moving data rather than checking logic.
 
-#### 1. Symmetric Data Transfer
-We use a specialized helper so that a single implementation handles both Recording and Playback. Since `StreamBaseType` is known at compile-time, the compiler generates the correct copy direction without a runtime `if`.
+#### 1. Low-Level Utility Helpers
+We define small, `@inline` functions to handle pointer arithmetic and symmetric data transfer. These allow the main callback to remain readable while ensuring zero overhead.
+
+> **⚠️ Important Note on Pointer Arithmetic:** In Julia, `ptr + 1` moves by **1 byte**, not 1 element. We must manually multiply by `sizeof(T)`. However, `unsafe_copyto!` and `stream_space_reset!` (via `ccall`) work with **element counts** or **byte counts** respectively—precision here is key.
 
 ```julia
-# resolves to: hardware_ptr -> julia_ptr
-@inline stream_direction_transfer!(dest, src, bytes, ::Type{SoundIoInputStream_C}) = 
-    unsafe_copyto!(src, dest, bytes)
+# --- Pointer Math: Manual Byte-Scaling Required ---
 
-# resolves to: julia_ptr -> hardware_ptr
-@inline stream_direction_transfer!(dest, src, bytes, ::Type{SoundIoOutputStream_C}) = 
-    unsafe_copyto!(dest, src, bytes)
+# Resolves to the base memory address of the current buffer segment (atom)
+@inline get_source_ptr_base(buffer::FrozenAudioBuffer{T,isatomic}) where {T} = 
+    isatomic ? buffer.layout.data_ptr + (buffer.stream.current_offset_base * sizeof(T)) : 
+               buffer.layout.data_ptr
+
+# Resolves to the exact address within the atom, accounting for the current frame offset
+@inline get_source_ptr(buffer::FrozenAudioBuffer{T,isatomic}) where {T} = 
+    isatomic ? buffer.layout.data_ptr + ((buffer.stream.current_offset_base + buffer.stream.atomic_frame_offset) * sizeof(T)) : 
+               buffer.layout.data_ptr + (buffer.stream.atomic_frame_offset * sizeof(T))
+
+# --- Data Transfer: Automatic Element-Scaling ---
+
+# Calculates remaining frames in the current atom to prevent buffer overruns
+@inline get_frames_to_copy(buffer::FrozenAudioBuffer, actual_frames::Int) = 
+    min(actual_frames, buffer.layout.atom_frames - buffer.stream.atomic_frame_offset)
+
+# Symmetric Transfer: Direction resolved at compile-time via Multiple Dispatch
+# Note: unsafe_copyto! uses element counts, NOT byte counts.
+@inline stream_direction_transfer!(dest::Ptr{T}, src::Ptr{T}, frames::Int, ::Type{SoundIoInputStream_C}) where {T} = 
+    unsafe_copyto!(src, dest, frames)
+
+@inline stream_direction_transfer!(dest::Ptr{T}, src::Ptr{T}, frames::Int, ::Type{SoundIoOutputStream_C}) where {T} = 
+    unsafe_copyto!(dest, src, frames)
+
+# Zeroing Memory: Direct C call for maximum speed (requires manual byte count)
+@inline function stream_space_reset!(ptr::Ptr{T}, frames::Integer) where {T}
+    ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), ptr, 0, frames * sizeof(T))
+end
 ```
 #### 2. The Boundary Handler (Logic & Sync)
 This function manages the "rollover" when we reach the end of a buffer slice (an "atom"). It updates the atomic state and notifies the Julia event loop that a segment is complete.
