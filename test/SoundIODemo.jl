@@ -55,10 +55,10 @@ function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T, Channels
     halt_sound_buffer(sync)
 end
 # Uses the audio_streamer_ram_playback to manage streaming.
-function play_audio_threaded(audio_data::AbstractArray{T}, sample_rate::Integer, device::SoundIODevice) where {T<:Sample}
-    stream = SoundIO.open_sound_stream(device, T, nothing, sample_rate)
+function play_audio_threaded(device::SoundIODevice, audio_data::AbstractSampleArray{T,N}) where {T<:Sample,N}
+    stream = SoundIO.open_sound_stream(device, audio_data.rate[1], T, nothing)
     sync = stream.sync[]
-    worker_task = Threads.@spawn :interactive audio_streamer_ram_playback(sync, audio_data)
+    worker_task = Threads.@spawn :interactive audio_streamer_ram_playback(sync, audio_data.sample)
     start!(stream)
     wait(worker_task)
     destroy_sound_stream_unsafe(stream)
