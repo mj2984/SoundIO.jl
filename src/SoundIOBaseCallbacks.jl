@@ -81,8 +81,9 @@ is_pointer_safe(A::DenseArray) = true
 is_pointer_safe(A::SubArray) = Base.iscontiguous(A)
 is_pointer_safe(A::Base.ReinterpretArray{T,N,S,P}) where {T,N,S,P} = isbitstype(T) && is_pointer_safe(parent(A))
 is_pointer_safe(A::AbstractArray) = false
-@inline function validate_bufferspec(T,N)
-    if T<:Sample
+const FrozenBufferSpec{T,N} = Union{Tuple{Integer, AbstractArray{T,N}, Bool},Tuple{AbstractDomainArray{T,N}, Bool}} where {T,N}
+@inline function validate_bufferspec(::Type{B}) where {B<:FrozenBufferSpec{T,N}} where {T,N}
+    if T <: Sample
         if N < 1
             error("Audio data must have at least 1 dimension: (Frames, ...)")
         end
@@ -120,9 +121,8 @@ end
     end
     return ptr, (atom_frames, total_atoms)
 end
-const FrozenBufferSpec{T,N} = Union{Tuple{Integer, AbstractArray{T,N}, Bool},Tuple{AbstractDomainArray{T,N}, Bool}} where {T,N}
-function Base.open(device::SoundIODevice,format::Union{Symbol,Int32},bufferspec::FrozenBufferSpec{T,N},latency_seconds::Float64 = 1.0) where {T,N}
-    validate_bufferspec(T,N)
+function Base.open(device::SoundIODevice,format::Union{Symbol,Int32},bufferspec::B,latency_seconds::Float64 = 1.0) where {B<:FrozenBufferSpec}
+    validate_bufferspec(B)
     sample_rate, audio_data, isclearing = resolve_bufferspec(bufferspec)
     ptr, atom_dims::NTuple{2,Int} = compute_frozenbuffer_layout(audio_data)
     return open_sound_stream(device,format,sample_rate,(ptr, atom_dims, isclearing),audio_data,latency_seconds)
