@@ -171,7 +171,7 @@ end
     s.read_callback = Base.unsafe_convert(Ptr{Cvoid}, callback)
     return s
 end
-function open_sound_stream(device::SoundIODevice{StreamBaseType}, buffer::T, callback::Base.CFunction, preserve::Any, sample_rate::Integer, format::Int32, latency_seconds::Float64 = 3.0) where {StreamBaseType,T <: SoundIOSynchronizer}
+function open_sound_stream(device::SoundIODevice{StreamBaseType}, format::Int32, sample_rate::Integer, buffer::T, callback::Base.CFunction, preserve::Any, latency_seconds::Float64 = 3.0) where {StreamBaseType,T <: SoundIOSynchronizer}
     out_ptr = initialize_sound_stream(device)
     buffer_ref = Ref(buffer)
     s = unsafe_load(out_ptr)::StreamBaseType # Load C-struct, update fields
@@ -187,15 +187,15 @@ function open_sound_stream(device::SoundIODevice{StreamBaseType}, buffer::T, cal
     push!(device.streams, stream) 
     return stream
 end
-function open_sound_stream(device::SoundIODevice, buffer::T, callback::Base.CFunction, preserve::Any, sample_rate::Integer, format::Symbol, latency_seconds::Float64 = 1.0) where {T <: SoundIOSynchronizer}
+function open_sound_stream(device::SoundIODevice{StreamBaseType}, format::Symbol, sample_rate::Integer, buffer::T, callback::Base.CFunction, preserve::Any, latency_seconds::Float64 = 1.0) where {StreamBaseType, T <: SoundIOSynchronizer}
     if !haskey(SoundIoFormats, format)
         error("Unknown SoundIO format: :$format. Available: $(keys(SoundIoFormats))")
     end
-    return open_sound_stream(device, buffer, callback, preserve, sample_rate, SoundIoFormats[format], latency_seconds)
+    return open_sound_stream(device, SoundIoFormats[format], sample_rate, buffer, callback, preserve, latency_seconds)
 end
-function open_sound_stream(device::SoundIODevice{StreamBaseType}, buffer::T, callback_function::F, preserve::Any, sample_rate::Integer, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0) where {StreamBaseType, T <: SoundIOSynchronizer, F <: Function}
+function open_sound_stream(device::SoundIODevice{StreamBaseType}, format::Union{Symbol,Int32}, sample_rate::Integer, buffer::T, callback_function::F, preserve::Any, latency_seconds::Float64 = 1.0) where {StreamBaseType, T <: SoundIOSynchronizer, F <: Function}
     callback = make_audio_callback(StreamBaseType,T,callback_function)
-    return open_sound_stream(device,buffer,callback,preserve,sample_rate,format,latency_seconds)
+    return open_sound_stream(device,format,sample_rate,buffer,callback,preserve,latency_seconds)
 end
 function get_destination_format(::Type{T}) where T
     T === Int16   && return SoundIoFormats[:Int16Little]
