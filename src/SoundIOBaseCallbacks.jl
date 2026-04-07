@@ -112,3 +112,5 @@ function Base.open(device::SoundIODevice, bufferspec::Tuple{AbstractArray{T,N},B
     end
 end
 Base.open(device::SoundIODevice, bufferspec::Tuple{AbstractArray{T,N},Bool}, sample_rate::Integer, latency_seconds::Float64 = 1.0) where {T,N} = open(device,bufferspec,sample_rate,get_destination_format(T),latency_seconds)
+Base.open(device::SoundIODevice, bufferspec::Tuple{SampleArray{T,N,A,R},Bool}, format::Union{Symbol,Int32}, latency_seconds::Float64 = 1.0) where {T,N,A,R} = open(device,(bufferspec[1].sample,bufferspec[2]),Int(bufferspec[1].rate[1]),format,latency_seconds)
+Base.open(device::SoundIODevice, bufferspec::Tuple{SampleArray{T,N,A,R},Bool}, latency_seconds::Float64 = 1.0) where {T,N,A,R} = open(device,bufferspec,get_destination_format(T),latency_seconds)
