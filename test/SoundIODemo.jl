@@ -1,8 +1,8 @@
-using SamplesCore, WavNative, SoundIO
+using SamplesCore, SoundIO, WavNative
 #using PtrArrays
 # Frozen Audio Buffer Example.
-function play_audio(audio_data::AbstractArray{T}, sample_rate::Integer, device::SoundIODevice) where {T<:Union{Number,Sample}}
-    stream = open(device, (audio_data, false), sample_rate) # The stream captures the audio data from being Garbage collected.
+function play_audio(device::SoundIODevice, audio_data::SampleArray)
+    stream = open(device, (audio_data, false)) # The stream captures the audio data from being Garbage collected.
     buffer_stream = stream.sync[].stream::FrozenAudioStream
     start!(stream) #println("🔊 Playback started. Press Ctrl+C to stop.")
     try
@@ -63,11 +63,6 @@ function play_audio_threaded(audio_data::AbstractArray{T}, sample_rate::Integer,
     wait(worker_task)
     destroy_sound_stream_unsafe(stream)
     println("Playback finished.")
-end
-function play_music(sound_file::String,audio_device::SoundIODevice)
-    audio_data,sample_rate = audioread(sound_file,false)
-    play_audio(audio_data,Int(sample_rate),audio_device)
-    #play_audio_threaded(audio_data,Int(sample_rate),audio_device)
 end
 #1. The Watcher (Runs in the background)
 #=
