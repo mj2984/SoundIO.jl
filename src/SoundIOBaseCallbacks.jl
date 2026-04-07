@@ -90,7 +90,7 @@ function resolve_bufferspec(bufferspec::Tuple{Integer, AbstractArray{T,N}, Bool}
 end
 function resolve_bufferspec(bufferspec::Tuple{AbstractDomainArray{T,N}, Bool}) where {T,N}
     S, isclearing = bufferspec
-    return Int(S.rate[1]),S.sample,isclearing
+    return Int(S.rate[1]),S.data,isclearing
 end
 function compute_frozenbuffer_layout(audio_data::AbstractArray{T,N}) where {T,N}
     if !is_pointer_safe(audio_data)
