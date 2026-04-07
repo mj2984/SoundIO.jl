@@ -89,8 +89,8 @@ Threads.@spawn start_loop(input_stream,output_stream)
 2. Playing Wav files
 ```julia
 using SamplesCore, WavNative, SoundIO
-function play_audio(device::SoundIODevice, audio_data::SampleArray{T,N,A,R}) where {T<:Union{Number,Sample},N,A,R}
-    stream = open(device, (audio_data, false), sample_rate) # The stream captures the audio data from being Garbage collected.
+function play_audio(device::SoundIODevice, audio_data::SampleArray)
+    stream = open(device, (audio_data, false)) # The stream captures the audio data from being Garbage collected.
     buffer_stream = stream.sync[].stream::FrozenAudioStream
     start!(stream) #println("🔊 Playback started. Press Ctrl+C to stop.")
     try
