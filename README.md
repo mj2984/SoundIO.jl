@@ -105,12 +105,12 @@ end
 sampling_frequency = 48000
 buffer_atom_time = 0.5 # Notifications are sent every buffer_atom_time seconds.
 total_buffer_atoms = 10 # It goes through 10 such cyles before looping back. (in many cases 2-3 is sufficient)
-shared_data = zeros(Sample{2, Q0f15}, Int(buffer_atom_time * sampling_frequency), total_buffer_atoms) # Pre allocate the array for buffering.
+shared_data = SampleArray(zeros(Sample{2, Q0f15}, Int(buffer_atom_time * sampling_frequency), total_buffer_atoms), (sampling_frequency,)) # Pre allocate the array for buffering.
 
 input_device, output_device = get_sound_devices()
 # Opening streams. This gets connections to a sound device and ensures the device is active. Opening a stream with this API locks the shared_data array from being garbage collected.
-input_stream  = open(input_device,  (shared_data, false), sampling_frequency)
-output_stream = open(output_device, (shared_data, false), sampling_frequency)
+input_stream  = open(input_device,  (shared_data, false))
+output_stream = open(output_device, (shared_data, false))
 
 Threads.@spawn start_loop(input_stream,output_stream)
 # At any moment you could peek into shared_data and see the actual data.
@@ -119,8 +119,8 @@ Threads.@spawn start_loop(input_stream,output_stream)
 2. Playing Wav files
 ```julia
 using SamplesCore, WavNative, SoundIO
-function play_audio(audio_data::AbstractArray{T}, sample_rate::Integer, device::SoundIODevice) where {T<:Union{Number,Sample}}
-    stream = open(device, (audio_data, false), sample_rate) # The stream captures the audio data from being Garbage collected.
+function play_audio(device::SoundIODevice, audio_data::SampleArray{T,N,A,R}) where {T<:Union{Number,Sample},N,A,R}
+    stream = open(device, (audio_data, false)) # The stream captures the audio data from being Garbage collected.
     buffer_stream = stream.sync[].stream::FrozenAudioStream
     start!(stream) #println("🔊 Playback started. Press Ctrl+C to stop.")
     try
@@ -136,16 +136,12 @@ function play_audio(audio_data::AbstractArray{T}, sample_rate::Integer, device::
     end
 end
 
-function play_music(sound_file::String,audio_device::SoundIODevice)
-    audio_data,sample_rate = audioread(sound_file,false)
-    play_audio(audio_data,Int(sample_rate),audio_device)
-end
-
 sound_file = raw"sound_file.wav"
 enumerate_sound_devices!()
 audio_device = filter(d -> (!d.is_input) & (d.is_raw), list_sound_devices())[1]
 println("🎶 Playing: $sound_file")
-play_music(sound_file,audio_device)
+audio_data = audioread(sound_file,false) # audio_data is a SampleArray which contains information about sample rate.
+play_audio(audio_device,audio_data)
 println("Finished!")
 ```
 More demo code can be found at \test
