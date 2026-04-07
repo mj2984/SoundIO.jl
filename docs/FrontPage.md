@@ -75,7 +75,7 @@ end
 sampling_frequency = 48000
 buffer_atom_time = 0.5 # Notifications are sent every buffer_atom_time seconds.
 total_buffer_atoms = 10 # It goes through 10 such cyles before looping back. (in many cases 2-3 is sufficient)
-shared_data = samplezeros(Sample{2,Q0f15},(buffer_atom_time,sampling_frequency),total_buffer_atoms) # Pre allocate the array for buffering.
+shared_data = domainzeros(Sample{2,Q0f15},(buffer_atom_time,sampling_frequency),total_buffer_atoms) # Pre allocate the array for buffering.
 
 input_device, output_device = get_sound_devices()
 # Opening streams. This gets connections to a sound device and ensures the device is active. Opening a stream with this API locks the shared_data array from being garbage collected.
@@ -89,7 +89,7 @@ Threads.@spawn start_loop(input_stream,output_stream)
 2. Playing Wav files
 ```julia
 using SamplesCore, WavNative, SoundIO
-function play_audio(device::SoundIODevice, audio_data::SampleArray)
+function play_audio(device::SoundIODevice, audio_data::DomainArray)
     stream = open(device, (audio_data, false)) # The stream captures the audio data from being Garbage collected.
     buffer_stream = stream.sync[].stream::FrozenAudioStream
     start!(stream) #println("🔊 Playback started. Press Ctrl+C to stop.")
@@ -110,7 +110,7 @@ sound_file = raw"sound_file.wav"
 enumerate_sound_devices!()
 audio_device::SoundIODevice = filter(d -> (!d.is_input) & (d.is_raw), list_sound_devices())[1]
 println("🎶 Playing: $sound_file")
-audio_data::SampleArray = audioread(sound_file,false) # SampleArray contains information about sample rate.
+audio_data::DomainArray = audioread(sound_file,false) # SampleArray contains information about sample rate.
 audio_view = view(audio_data,0:10) # range provided in domain axis. Here it provides the first 10 seconds.
 play_audio(audio_device,audio_view)
 println("Finished!")
