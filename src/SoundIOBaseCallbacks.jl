@@ -83,12 +83,12 @@ is_pointer_safe(A::Base.ReinterpretArray{T,N,S,P}) where {T,N,S,P} = isbitstype(
 is_pointer_safe(A::AbstractArray) = false
 function resolve_bufferspec(bufferspec::Tuple{Integer, AbstractArray{T,N}, Bool}) where {T,N}
     sample_rate, audio_data, isclearing = bufferspec
-    if(audio_data isa AbstractSampleArray)
+    if(audio_data isa AbstractDomainArray)
         error("Ambiguous sample rate arguments")
     end
     return sample_rate, audio_data, isclearing
 end
-function resolve_bufferspec(bufferspec::Tuple{AbstractSampleArray{T,N}, Bool}) where {T,N}
+function resolve_bufferspec(bufferspec::Tuple{AbstractDomainArray{T,N}, Bool}) where {T,N}
     S, isclearing = bufferspec
     return Int(S.rate[1]),S.sample,isclearing
 end
@@ -114,7 +114,7 @@ function compute_frozenbuffer_layout(audio_data::AbstractArray{T,N}) where {T,N}
     end
     return ptr, (atom_frames, total_atoms)
 end
-const FrozenBufferSpec{T,N} = Union{Tuple{Integer, AbstractArray{T,N}, Bool},Tuple{AbstractSampleArray{T,N}, Bool}} where {T,N}
+const FrozenBufferSpec{T,N} = Union{Tuple{Integer, AbstractArray{T,N}, Bool},Tuple{AbstractDomainArray{T,N}, Bool}} where {T,N}
 function Base.open(device::SoundIODevice,format::Union{Symbol,Int32},bufferspec::FrozenBufferSpec{T,N},latency_seconds::Float64 = 1.0) where {T,N}
     sample_rate, audio_data, isclearing = resolve_bufferspec(bufferspec)
     ptr, atom_dims::NTuple{2,Int} = compute_frozenbuffer_layout(audio_data)
