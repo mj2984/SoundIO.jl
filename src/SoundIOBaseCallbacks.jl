@@ -81,32 +81,38 @@ is_pointer_safe(A::DenseArray) = true
 is_pointer_safe(A::SubArray) = Base.iscontiguous(A)
 is_pointer_safe(A::Base.ReinterpretArray{T,N,S,P}) where {T,N,S,P} = isbitstype(T) && is_pointer_safe(parent(A))
 is_pointer_safe(A::AbstractArray) = false
-function resolve_bufferspec(bufferspec::Tuple{Integer, AbstractArray{T,N}, Bool}) where {T,N}
+@inline function validate_bufferspec(T,N)
+    if T<:Sample
+        if N < 1
+            error("Audio data must have at least 1 dimension: (Frames, ...)")
+        end
+    else
+        if N < 2
+            error("Audio data must have at least 2 dimensions: (Channels, Frames, ...)")
+        end
+    end
+end
+@inline function resolve_bufferspec(bufferspec::Tuple{Integer, AbstractArray{T,N}, Bool}) where {T,N}
     sample_rate, audio_data, isclearing = bufferspec
     if(audio_data isa AbstractDomainArray)
         error("Ambiguous sample rate arguments")
     end
     return sample_rate, audio_data, isclearing
 end
-function resolve_bufferspec(bufferspec::Tuple{AbstractDomainArray{T,N}, Bool}) where {T,N}
+@inline function resolve_bufferspec(bufferspec::Tuple{AbstractDomainArray{T,N}, Bool}) where {T,N}
     S, isclearing = bufferspec
-    return Int(S.rate[1]),S.data,isclearing
+    sample_rate = (T <: Sample) ? S.rate[1] : S.rate[2]
+    return Int(sample_rate),S.data,isclearing
 end
-function compute_frozenbuffer_layout(audio_data::AbstractArray{T,N}) where {T,N}
+@inline function compute_frozenbuffer_layout(audio_data::AbstractArray{T,N}) where {T,N}
     if !is_pointer_safe(audio_data)
         error("Audio buffer is not pointer-safe")
     end
     if T <: Sample
-        if N < 1
-            error("Audio data must have at least 1 dimension: (Frames, ...)")
-        end
         atom_frames = size(audio_data, 1)
         total_atoms = div(length(audio_data), atom_frames)
         ptr = pointer(audio_data)
     else
-        if N < 2
-            error("Audio data must have at least 2 dimensions: (Channels, Frames, ...)")
-        end
         Channels = size(audio_data, 1)
         atom_frames = size(audio_data, 2)
         total_atoms = div(length(audio_data), Channels * atom_frames)
@@ -116,6 +122,7 @@ function compute_frozenbuffer_layout(audio_data::AbstractArray{T,N}) where {T,N}
 end
 const FrozenBufferSpec{T,N} = Union{Tuple{Integer, AbstractArray{T,N}, Bool},Tuple{AbstractDomainArray{T,N}, Bool}} where {T,N}
 function Base.open(device::SoundIODevice,format::Union{Symbol,Int32},bufferspec::FrozenBufferSpec{T,N},latency_seconds::Float64 = 1.0) where {T,N}
+    validate_bufferspec(T,N)
     sample_rate, audio_data, isclearing = resolve_bufferspec(bufferspec)
     ptr, atom_dims::NTuple{2,Int} = compute_frozenbuffer_layout(audio_data)
     return open_sound_stream(device,format,sample_rate,(ptr, atom_dims, isclearing),audio_data,latency_seconds)
