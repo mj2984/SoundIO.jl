@@ -2,8 +2,8 @@
 @inline get_source_ptr(buffer::FrozenAudioBuffer{T,isatomic,isclearing}) where {T<:Sample,isatomic,isclearing} = isatomic ? buffer.layout.data_ptr + ((buffer.stream.current_offset_base + buffer.stream.atomic_frame_offset) * sizeof(T)) : buffer.layout.data_ptr + (buffer.stream.atomic_frame_offset * sizeof(T))
 @inline get_frames_to_copy(buffer::FrozenAudioBuffer{T,isatomic,isclearing},actual_frames::Int) where {T<:Sample,isatomic,isclearing} = min(actual_frames, buffer.layout.atom_frames - buffer.stream.atomic_frame_offset)
 # TODO:: underrun as type parameter.exit_on_underrun 
-@inline stream_direction_transfer!(destination::Ptr{T},source::Ptr{T},frames_to_copy::Int,::Type{SoundIoInputStream_C}) where {T<:Sample} = unsafe_copyto!(source, destination, frames_to_copy)
-@inline stream_direction_transfer!(destination::Ptr{T},source::Ptr{T},frames_to_copy::Int,::Type{SoundIoOutputStream_C}) where {T<:Sample} = unsafe_copyto!(destination, source, frames_to_copy)
+@inline stream_direction_transfer!(destination::Ptr{T},source::Ptr{T},frames_to_copy::Int,::Type{InputSoundStream}) where {T<:Sample} = unsafe_copyto!(source, destination, frames_to_copy)
+@inline stream_direction_transfer!(destination::Ptr{T},source::Ptr{T},frames_to_copy::Int,::Type{OutputSoundStream}) where {T<:Sample} = unsafe_copyto!(destination, source, frames_to_copy)
 @inline function stream_space_reset!(ptr::Ptr{T}, frames::Integer) where {T<:Sample}
     ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), ptr, 0, frames * sizeof(T))
     return
