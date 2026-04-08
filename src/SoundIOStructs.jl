@@ -82,7 +82,7 @@ struct SoundIoDevice_C
     ref_count::Cint                         # int ref_count;
     probe_error::Cint                       # int probe_error;
 end
-mutable struct SoundIoOutputStream_C
+mutable struct InputSoundStream
     device::Ptr{Cvoid}
     format::Cint #Int32
     sample_rate::Cint #Int32
@@ -99,8 +99,8 @@ mutable struct SoundIoOutputStream_C
     bytes_per_sample::Cint
     layout_error::Cint
 end
-const SOUNDIO_OUTPUTSTREAM_USERDATA_OFFSET = fieldoffset(SoundIoOutputStream_C, 7)
-mutable struct SoundIoInputStream_C
+const SOUNDIO_OUTPUTSTREAM_USERDATA_OFFSET = fieldoffset(InputSoundStream, 7)
+mutable struct OutputSoundStream
     device::Ptr{Cvoid}
     format::Cint
     sample_rate::Cint
