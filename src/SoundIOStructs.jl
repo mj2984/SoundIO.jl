@@ -56,27 +56,31 @@ mutable struct AudioCallbackSynchronizer{T,Channels} <: SoundIOSynchronizer
 end
 # Internal C-struct for safe pointer access
 struct SoundIoDevice_C
-    soundio::Ptr{Cvoid}  # Offset 0
-    id::Ptr{Cchar}       # Offset 8
-    name::Ptr{Cchar}     # Offset 16
-    aim::Cint            # Offset 24 (1=Input, 2=Output)
-    # ... other fields ignored as we access via struct padding
-    #=
-    layout_count::Cint       # 28
-    layouts::Ptr{Cvoid}      # 32
-    current_layout::SoundIoChannelLayout # 40 (Size: ~104 bytes)
-    format_count::Cint       # 144
-    formats::Ptr{Cint}       # 152
-    current_format::Cint     # 160
-    sample_rate_count::Cint  # 164
-    sample_rates::Ptr{Cvoid} # 168
-    sample_rate_current::Cint # 176
-    software_latency_min::Cdouble # 184
-    software_latency_max::Cdouble # 192
-    software_latency_current::Cdouble # 200
-    is_raw::UInt8            # 208
-    ref_count::Cint          # 212
-    =#
+    soundio::Ptr{Cvoid}                     # struct SoundIo *soundio;
+    id::Ptr{Cchar}                          # char *id;
+    name::Ptr{Cchar}                        # char *name;
+    aim::Cint                               # enum SoundIoDeviceAim aim;
+
+    layouts::Ptr{SoundIoChannelLayout_C}    # struct SoundIoChannelLayout *layouts;
+    layout_count::Cint                      # int layout_count;
+    current_layout::SoundIoChannelLayout_C  # struct SoundIoChannelLayout current_layout;
+
+    formats::Ptr{Cint}                      # enum SoundIoFormat *formats;
+    format_count::Cint                      # int format_count;
+    current_format::Cint                    # enum SoundIoFormat current_format;
+
+    sample_rates::Ptr{Cvoid}                # struct SoundIoSampleRateRange *sample_rates;
+    sample_rate_count::Cint                 # int sample_rate_count;
+    sample_rate_current::Cint               # int sample_rate_current;
+
+    software_latency_min::Cdouble           # double software_latency_min;
+    software_latency_max::Cdouble           # double software_latency_max;
+    software_latency_current::Cdouble       # double software_latency_current;
+
+    is_raw::UInt8                           # bool is_raw;
+    # 3 bytes padding here on most ABIs
+    ref_count::Cint                         # int ref_count;
+    probe_error::Cint                       # int probe_error;
 end
 mutable struct SoundIoOutputStream_C
     device::Ptr{Cvoid}
