@@ -1,4 +1,3 @@
-# Low-Level C-Compatible Structs (Matching libsoundio headers)
 struct SoundIoChannelArea_C
     ptr::Ptr{UInt8}
     step::Cint
@@ -8,11 +7,6 @@ struct SoundIoChannelLayout
     channel_count::Cint #Int32
     channels::NTuple{24, Cint} #NTuple{24, Int32}
 end
-#=
-mutable struct SoundIORingBuffer
-    ptr::Ptr{Cvoid}
-end
-=#
 # --- Playback Logic ---
 struct FrozenAudioLayout{T<:Sample,isatomic,isclearing} # The "Map": Immutable description of the static memory
     data_ptr::Ptr{T}
@@ -61,9 +55,9 @@ struct SoundIoDevice_C
     name::Ptr{Cchar}                        # char *name;
     aim::Cint                               # enum SoundIoDeviceAim aim;
 
-    layouts::Ptr{SoundIoChannelLayout_C}    # struct SoundIoChannelLayout *layouts;
+    layouts::Ptr{SoundIoChannelLayout}    # struct SoundIoChannelLayout *layouts;
     layout_count::Cint                      # int layout_count;
-    current_layout::SoundIoChannelLayout_C  # struct SoundIoChannelLayout current_layout;
+    current_layout::SoundIoChannelLayout  # struct SoundIoChannelLayout current_layout;
 
     formats::Ptr{Cint}                      # enum SoundIoFormat *formats;
     format_count::Cint                      # int format_count;
@@ -84,31 +78,14 @@ struct SoundIoDevice_C
 end
 mutable struct OutputSoundStream
     device::Ptr{Cvoid}
-    format::Cint #Int32
-    sample_rate::Cint #Int32
-    layout::SoundIoChannelLayout
-    software_latency::Cdouble #Float64
-    volume::Cfloat #Float32
-    userdata::Ptr{Cvoid}
-    write_callback::Ptr{Cvoid}
-    underflow_callback::Ptr{Cvoid}
-    error_callback::Ptr{Cvoid}
-    name::Ptr{Cchar}
-    non_terminal_hint::Cint #Int32
-    bytes_per_frame::Cint
-    bytes_per_sample::Cint
-    layout_error::Cint
-end
-const SOUNDIO_OUTPUTSTREAM_USERDATA_OFFSET = fieldoffset(OutputSoundStream, 7)
-mutable struct InputSoundStream
-    device::Ptr{Cvoid}
     format::Cint
     sample_rate::Cint
     layout::SoundIoChannelLayout
     software_latency::Cdouble
+    volume::Cfloat
     userdata::Ptr{Cvoid}
-    read_callback::Ptr{Cvoid}      # Handshake for capturing data
-    overflow_callback::Ptr{Cvoid}  # Triggered when Julia is too slow
+    write_callback::Ptr{Cvoid}
+    underflow_callback::Ptr{Cvoid}
     error_callback::Ptr{Cvoid}
     name::Ptr{Cchar}
     non_terminal_hint::Cint
@@ -116,13 +93,26 @@ mutable struct InputSoundStream
     bytes_per_sample::Cint
     layout_error::Cint
 end
-const SOUNDIO_INPUTSTREAM_USERDATA_OFFSET = fieldoffset(InputSoundStream, 6)
-# --- High-Level Julia Wrappers ---
-# Pre-declare for the Device struct
+mutable struct InputSoundStream
+    device::Ptr{Cvoid}
+    format::Cint
+    sample_rate::Cint
+    layout::SoundIoChannelLayout
+    software_latency::Cdouble
+    userdata::Ptr{Cvoid}
+    read_callback::Ptr{Cvoid}
+    overflow_callback::Ptr{Cvoid}
+    error_callback::Ptr{Cvoid}
+    name::Ptr{Cchar}
+    non_terminal_hint::Cint
+    bytes_per_frame::Cint
+    bytes_per_sample::Cint
+    layout_error::Cint
+end
 struct SoundIOStream{StreamBaseType,T <: SoundIOSynchronizer}
     ptr::Ptr{StreamBaseType}
-    format::Cint #Int32
-    rate::Cint #Int32
+    format::Cint
+    rate::Cint
     sync::Ref{T}
     callback_ptr::Base.CFunction
     anchor::Any
@@ -131,17 +121,17 @@ struct SoundIODevicePtrs
     device::Ptr{Cvoid}
     ctx::Ptr{Cvoid}
 end
-struct SoundIODevice{StreamBaseType}
+struct SoundIODevice{StreamBaseType,Access}
     ptrs::Base.RefValue{SoundIODevicePtrs}
     name::String
     id::String
     is_default::Bool
-    is_raw::Bool
     streams::Vector{SoundIOStream{StreamBaseType,<:SoundIOSynchronizer}}
     function SoundIODevice(ctx_ptr::Ptr{Cvoid}, device_ptr::Ptr{Cvoid}, name::String, id::String, is_input::Bool, is_default::Bool, is_raw::Bool)
         ccall((:soundio_device_ref, libsoundio), Cvoid, (Ptr{Cvoid},), device_ptr) # Increment C-ref count to keep memory alive while this Julia object exists
         StreamBaseType = is_input ? InputSoundStream : OutputSoundStream
-        return new{StreamBaseType}(Ref(SoundIODevicePtrs(device_ptr, ctx_ptr)), name, id, is_default, is_raw, Vector{SoundIOStream{StreamBaseType, <:SoundIOSynchronizer}}())
+        Access = is_raw ? :raw : :shared
+        return new{StreamBaseType,Access}(Ref(SoundIODevicePtrs(device_ptr, ctx_ptr)), name, id, is_default, Vector{SoundIOStream{StreamBaseType, <:SoundIOSynchronizer}}())
         # Decrement Ref Count on GC
         #=finalizer(dev) do d
             for s in d.streams
@@ -165,12 +155,24 @@ struct SoundIODevice{StreamBaseType}
         return SoundIODevice(ctx_ptr, device_ptr, name_str, id_str, is_input, is_default, is_raw)
     end
 end
+struct SoundIODeviceGroup{Access}
+    inputs::Vector{SoundIODevice{InputSoundStream, Access}}
+    outputs::Vector{SoundIODevice{OutputSoundStream, Access}}
+    SoundIODeviceGroup(Access::Symbol) = new{Access}(Vector{SoundIODevice{InputSoundStream, Access}}(),Vector{SoundIODevice{OutputSoundStream, Access}}())
+end
+struct SoundIODevices
+    raw::SoundIODeviceGroup{:raw}
+    shared::SoundIODeviceGroup{:shared}
+    SoundIODevices() = new(SoundIODeviceGroup(:raw),SoundIODeviceGroup(:shared))
+end
 struct SoundIOContext
     ptr::Base.RefValue{Ptr{Cvoid}}
-    devices::Vector{SoundIODevice}
+    devices::SoundIODevices
     function SoundIOContext()
         p = ccall((:soundio_create, libsoundio), Ptr{Cvoid}, ())
         p == C_NULL && error("Failed to create SoundIO context")
-        return new(Ref(p), SoundIODevice[])
+        return new(Ref(p), SoundIODevices())
     end
 end
+const SOUNDIO_OUTPUTSTREAM_USERDATA_OFFSET = fieldoffset(OutputSoundStream, 7)
+const SOUNDIO_INPUTSTREAM_USERDATA_OFFSET = fieldoffset(InputSoundStream, 6)
