@@ -9,8 +9,9 @@ function get_context()
 end
 
 # Now you can simplify the API:
-enumerate_sound_devices!() = enumerate_devices!(get_context())
-list_sound_devices() = list_devices(GLOBAL_CONTEXT[])
+enumerate_devices!(::SoundDevices) = enumerate_devices!(get_context())
+list_devices(::SoundDevices) = list_devices(GLOBAL_CONTEXT[])
+list_devices(::SoundDevices, access::SoundAccessType) = list_devices(GLOBAL_CONTEXT[], access)
 function with_context(f::Function)
     if GLOBAL_CONTEXT[] !== nothing && isopen(GLOBAL_CONTEXT[])
         return f(GLOBAL_CONTEXT[]) # Borrow
