@@ -17,5 +17,5 @@ export SoundIOContext, SoundIODevice, SoundIOOutStream, FrozenAudioStream, Froze
        start!, CallbackStopped, CallbackJuliaDone, CallbackStatusReady,
        acquire_sound_buffer_ptr, acquire_sound_buffer, release_sound_buffer, halt_sound_buffer,
        destroy_sound_stream_unsafe, destroy_sound_stream!, AudioCallbackMessage,
-       enumerate_sound_devices!, list_sound_devices
+       enumerate_devices!, list_devices, sounddevices
 end
