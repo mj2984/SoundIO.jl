@@ -117,17 +117,41 @@ function get_device_count_and_offset(ctx::SoundIOContext, isinput::Val{false})
 end
 get_device_ptr(ctx::SoundIOContext, offset::Int, isinput::Val{true}) = ccall((:soundio_get_input_device, libsoundio), Ptr{Cvoid}, (Ptr{Cvoid}, Cint), ctx.ptr[], offset)
 get_device_ptr(ctx::SoundIOContext, offset::Int, isinput::Val{false}) = ccall((:soundio_get_output_device, libsoundio), Ptr{Cvoid}, (Ptr{Cvoid}, Cint), ctx.ptr[], offset)
-function enumerate_devices_unsafe_internal!(ctx::SoundIOContext, directiontype::Val{isinput}) where isinput
-    device_count, default_device_offset = get_device_count_and_offset(ctx,directiontype)
+function insert_device!(devices::SoundIODevices, dev::SoundIODevice{S, A}) where {S, A}
+    if A === :raw
+        if S === InputSoundStream
+            push!(devices.raw.inputs, dev)
+        else
+            push!(devices.raw.outputs, dev)
+        end
+    else  # A === :shared
+        if S === InputSoundStream
+            push!(devices.shared.inputs, dev)
+        else
+            push!(devices.shared.outputs, dev)
+        end
+    end
+end
+function enumerate_devices_unsafe_internal!(ctx::SoundIOContext,::Val{isinput}) where isinput
+    device_count, default_device_offset = get_device_count_and_offset(ctx, Val(isinput))
     for offset in 0:(device_count - 1)
-        device_ptr = get_device_ptr(ctx,offset,directiontype)
+        device_ptr = get_device_ptr(ctx, offset, Val(isinput))
         # if dev_ptr != C_NULL
         # try
-        push!(ctx.devices, SoundIODevice(ctx.ptr[], device_ptr, offset == default_device_offset))
+        dev = SoundIODevice(ctx.ptr[], device_ptr, offset == default_device_offset)
+        insert_device!(ctx.devices, dev)
         # finally
-        ccall((:soundio_device_unref,libsoundio), Cvoid, (Ptr{Cvoid},), device_ptr)
+        ccall((:soundio_device_unref, libsoundio), Cvoid, (Ptr{Cvoid},), device_ptr)
         # end
     end
+end
+function Base.empty!(devicegroup::SoundIODeviceGroup)
+    empty!(devicegroup.inputs)
+    empty!(devicegroup.outputs)
+end
+function Base.empty!(devices::SoundIODevices)
+    empty!(devices.raw)
+    empty!(devices.shared)
 end
 function enumerate_devices_unsafe!(ctx::SoundIOContext)
     flush_events!(ctx)
@@ -140,10 +164,19 @@ function enumerate_devices!(ctx::SoundIOContext)
         enumerate_devices_unsafe!(ctx) #connect!(ctx)
     end
 end
-list_devices(ctx::SoundIOContext) = ctx.devices
-initialize_sound_stream_base(device::SoundIODevice{InputSoundStream}) = ccall((:soundio_instream_create, libsoundio), Ptr{InputSoundStream}, (Ptr{Cvoid},), device.ptrs[].device)
-initialize_sound_stream_base(device::SoundIODevice{OutputSoundStream}) = ccall((:soundio_outstream_create, libsoundio), Ptr{OutputSoundStream}, (Ptr{Cvoid},), device.ptrs[].device)
-function initialize_sound_stream(device::SoundIODevice{StreamBaseType}) where {StreamBaseType}
+struct SoundDevices end
+const sounddevices = SoundDevices()
+abstract type SoundAccessType end
+struct RawSoundAccess <: SoundAccessType end
+struct SharedSoundAccess <: SoundAccessType end
+const rawsoundaccess = RawSoundAccess()
+const sharedsoundaccess = SharedSoundAccess()
+list_devices(ctx::SoundIOContext,::RawSoundAccess) = ctx.devices.raw
+list_devices(ctx::SoundIOContext,::SharedSoundAccess) = ctx.devices.shared
+list_devices(ctx::SoundIOContext) = list_devices(ctx,rawsoundaccess)
+initialize_sound_stream_base(device::SoundIODevice{InputSoundStream,Mode}) where {Mode} = ccall((:soundio_instream_create, libsoundio), Ptr{InputSoundStream}, (Ptr{Cvoid},), device.ptrs[].device)
+initialize_sound_stream_base(device::SoundIODevice{OutputSoundStream,Mode}) where {Mode} = ccall((:soundio_outstream_create, libsoundio), Ptr{OutputSoundStream}, (Ptr{Cvoid},), device.ptrs[].device)
+function initialize_sound_stream(device::SoundIODevice{StreamBaseType,Mode}) where {StreamBaseType,Mode}
     out_ptr = initialize_sound_stream_base(device)
     stream_direction = (StreamBaseType === InputSoundStream) ? "instream" : "outstream"
     out_ptr == C_NULL && error("Failed to create $stream_direction")
@@ -171,7 +204,7 @@ end
     s.read_callback = Base.unsafe_convert(Ptr{Cvoid}, callback)
     return s
 end
-function open_sound_stream(device::SoundIODevice{StreamBaseType}, format::Int32, sample_rate::Integer, buffer::T, callback::Base.CFunction, preserve::Any, latency_seconds::Float64 = 3.0) where {StreamBaseType,T <: SoundIOSynchronizer}
+function open_sound_stream(device::SoundIODevice{StreamBaseType,Mode}, format::Int32, sample_rate::Integer, buffer::T, callback::Base.CFunction, preserve::Any, latency_seconds::Float64 = 3.0) where {StreamBaseType,Mode,T <: SoundIOSynchronizer}
     out_ptr = initialize_sound_stream(device)
     buffer_ref = Ref(buffer)
     s = unsafe_load(out_ptr)::StreamBaseType # Load C-struct, update fields
@@ -187,13 +220,13 @@ function open_sound_stream(device::SoundIODevice{StreamBaseType}, format::Int32,
     push!(device.streams, stream) 
     return stream
 end
-function open_sound_stream(device::SoundIODevice{StreamBaseType}, format::Symbol, sample_rate::Integer, buffer::T, callback::Base.CFunction, preserve::Any, latency_seconds::Float64 = 1.0) where {StreamBaseType, T <: SoundIOSynchronizer}
+function open_sound_stream(device::SoundIODevice{StreamBaseType,Mode}, format::Symbol, sample_rate::Integer, buffer::T, callback::Base.CFunction, preserve::Any, latency_seconds::Float64 = 1.0) where {StreamBaseType, Mode, T <: SoundIOSynchronizer}
     if !haskey(SoundIoFormats, format)
         error("Unknown SoundIO format: :$format. Available: $(keys(SoundIoFormats))")
     end
     return open_sound_stream(device, SoundIoFormats[format], sample_rate, buffer, callback, preserve, latency_seconds)
 end
-function open_sound_stream(device::SoundIODevice{StreamBaseType}, format::Union{Symbol,Int32}, sample_rate::Integer, buffer::T, callback_function::F, preserve::Any, latency_seconds::Float64 = 1.0) where {StreamBaseType, T <: SoundIOSynchronizer, F <: Function}
+function open_sound_stream(device::SoundIODevice{StreamBaseType,Mode}, format::Union{Symbol,Int32}, sample_rate::Integer, buffer::T, callback_function::F, preserve::Any, latency_seconds::Float64 = 1.0) where {StreamBaseType, Mode, T <: SoundIOSynchronizer, F <: Function}
     callback = make_audio_callback(StreamBaseType,T,callback_function)
     return open_sound_stream(device,format,sample_rate,buffer,callback,preserve,latency_seconds)
 end
@@ -300,13 +333,3 @@ end
 end
 @inline release_sound_buffer(sync::AudioCallbackSynchronizer) = update_callback_status_message(sync,CallbackJuliaDone)
 @inline halt_sound_buffer(sync::AudioCallbackSynchronizer) = update_callback_status_message(sync,CallbackStopped)
-
-@inline function Base.getproperty(d::SoundIODevice{S}, s::Symbol) where S
-    if s === :is_input
-        return S === InputSoundStream
-    elseif s === :is_output
-        return S === OutputSoundStream
-    else
-        return getfield(d, s)
-    end
-end
