@@ -40,3 +40,9 @@ function Base.show(io::IO, s::SoundIOStream{S, T}) where {S, T}
     icon = S === SoundIoInputStream_C ? "🎙️ " : "🔊 "
     print(io, "$icon $stream_type($(s.rate)Hz, :$fmt_sym) [Ptr: $(s.ptr)]")
 end
+function Base.show(io::IO, layout::SoundIoChannelLayout)
+    name = unsafe_string(layout.name)
+    channel_count = layout.channel_count
+    println("$name layout with $channel_count channels configured as :")
+    println(layout.channels)
+end
