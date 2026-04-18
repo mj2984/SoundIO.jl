@@ -117,19 +117,12 @@ function get_device_count_and_offset(ctx::SoundIOContext, isinput::Val{false})
 end
 get_device_ptr(ctx::SoundIOContext, offset::Int, isinput::Val{true}) = ccall((:soundio_get_input_device, libsoundio), Ptr{Cvoid}, (Ptr{Cvoid}, Cint), ctx.ptr[], offset)
 get_device_ptr(ctx::SoundIOContext, offset::Int, isinput::Val{false}) = ccall((:soundio_get_output_device, libsoundio), Ptr{Cvoid}, (Ptr{Cvoid}, Cint), ctx.ptr[], offset)
-function insert_device!(devices::SoundIODevices, dev::SoundIODevice{S, A}) where {S, A}
-    if A === :raw
-        if S === InputSoundStream
-            push!(devices.raw.inputs, dev)
-        else
-            push!(devices.raw.outputs, dev)
-        end
-    else  # A === :shared
-        if S === InputSoundStream
-            push!(devices.shared.inputs, dev)
-        else
-            push!(devices.shared.outputs, dev)
-        end
+function insert_device!(devices::SoundIODevices, dev::SoundIODevice{S, Access}) where {S, Access}
+    device_group = getfield(devices,Access)
+    if S === InputSoundStream
+        push!(device_group.inputs, dev)
+    elseif S === OutputSoundStream
+        push!(device_group.outputs, dev)
     end
 end
 function enumerate_devices_unsafe_internal!(ctx::SoundIOContext,::Val{isinput}) where isinput
