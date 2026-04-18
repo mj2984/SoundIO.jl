@@ -1,3 +1,21 @@
+SoundIODeviceConfiguration(device::SoundIODevice,layout::SoundIoChannelLayout,sample_rate::Integer,format::Type{T}) where {T} = SoundIODeviceConfiguration(device,layout,sample_rate,get_destination_format(format))
+SoundIODeviceConfiguration(device::SoundIODevice,layout::SoundIoChannelLayout,sample_rate::Integer,format::Symbol) = SoundIODeviceConfiguration(device,layout,sample_rate,SoundIoFormats[format])
+SoundIODeviceConfiguration(device::SoundIODevice,layout::SoundIoChannelLayout,sample_rate::Integer) = SoundIODeviceConfiguration(device,layout,sample_rate,nothing)
+SoundIODeviceConfiguration(device::SoundIODevice,layout::SoundIoChannelLayout) = SoundIODeviceConfiguration(device,layout,nothing,nothing)
+function load_sound_channel_layouts(c_dev::SoundIoDevice_C)
+    total = c_dev.layouts == C_NULL ? 0 : Int(c_dev.layout_count)
+    mem = Memory{SoundIoChannelLayout}(undef, total)
+    if total > 0
+        unsafe_copyto!(pointer(mem), c_dev.layouts, total)
+    end
+    return mem
+end
+function get_sound_device_parameters(c_dev::SoundIoDevice_C)
+    layouts = load_sound_channel_layouts(c_dev)
+    name_str = unsafe_string(c_dev.name)
+    id_str   = unsafe_string(c_dev.id)
+    return layouts, name_str, id_str, c_dev.aim, c_dev.is_raw
+end
 # --- The Audio Callback (Native Thread) ---
 @inline userdata_offset(::Type{InputSoundStream})  = SOUNDIO_INPUTSTREAM_USERDATA_OFFSET
 @inline userdata_offset(::Type{OutputSoundStream}) = SOUNDIO_OUTPUTSTREAM_USERDATA_OFFSET
@@ -197,11 +215,12 @@ end
     s.read_callback = Base.unsafe_convert(Ptr{Cvoid}, callback)
     return s
 end
-function open_sound_stream(device::SoundIODevice{StreamBaseType,Mode}, format::Int32, sample_rate::Integer, buffer::T, callback::Base.CFunction, preserve::Any, latency_seconds::Float64 = 3.0) where {StreamBaseType,Mode,T <: SoundIOSynchronizer}
+function open_sound_stream(device_configuration::Tuple{SoundIODevice{StreamBaseType,Mode},SoundIoChannelLayout,Int32}, sample_rate::Integer, buffer::T, callback::Base.CFunction, preserve::Any, latency_seconds::Float64 = 3.0) where {StreamBaseType,Mode,T <: SoundIOSynchronizer}
+    device, layout, format = device_configuration
     out_ptr = initialize_sound_stream(device)
     buffer_ref = Ref(buffer)
     s = unsafe_load(out_ptr)::StreamBaseType # Load C-struct, update fields
-    s.format, s.sample_rate, s.userdata, s.software_latency = Cint(format), Cint(sample_rate), pointer_from_objref(buffer_ref), latency_seconds
+    s.layout, s.format, s.sample_rate, s.userdata, s.software_latency = layout, Cint(format), Cint(sample_rate), pointer_from_objref(buffer_ref), latency_seconds
     set_callback!(s,callback)
     # s.error_callback = ERROR_CALLBACK (if defined) (Recommended)
     unsafe_store!(out_ptr, s) # Push back to C memory
@@ -213,15 +232,16 @@ function open_sound_stream(device::SoundIODevice{StreamBaseType,Mode}, format::I
     push!(device.streams, stream) 
     return stream
 end
-function open_sound_stream(device::SoundIODevice{StreamBaseType,Mode}, format::Symbol, sample_rate::Integer, buffer::T, callback::Base.CFunction, preserve::Any, latency_seconds::Float64 = 1.0) where {StreamBaseType, Mode, T <: SoundIOSynchronizer}
+function open_sound_stream(device_configuration::Tuple{SoundIODevice{StreamBaseType,Mode},SoundIoChannelLayout,Symbol}, sample_rate::Integer, buffer::T, callback::Base.CFunction, preserve::Any, latency_seconds::Float64 = 1.0) where {StreamBaseType, Mode, T <: SoundIOSynchronizer}
+    device, layout, format = device_configuration
     if !haskey(SoundIoFormats, format)
         error("Unknown SoundIO format: :$format. Available: $(keys(SoundIoFormats))")
     end
-    return open_sound_stream(device, SoundIoFormats[format], sample_rate, buffer, callback, preserve, latency_seconds)
+    return open_sound_stream((device, layout, SoundIoFormats[format]), sample_rate, buffer, callback, preserve, latency_seconds)
 end
-function open_sound_stream(device::SoundIODevice{StreamBaseType,Mode}, format::Union{Symbol,Int32}, sample_rate::Integer, buffer::T, callback_function::F, preserve::Any, latency_seconds::Float64 = 1.0) where {StreamBaseType, Mode, T <: SoundIOSynchronizer, F <: Function}
+function open_sound_stream(device_configuration::Tuple{SoundIODevice{StreamBaseType,Mode},SoundIoChannelLayout,Union{Symbol,Int32}}, sample_rate::Integer, buffer::T, callback_function::F, preserve::Any, latency_seconds::Float64 = 1.0) where {StreamBaseType, Mode, T <: SoundIOSynchronizer, F <: Function}
     callback = make_audio_callback(StreamBaseType,T,callback_function)
-    return open_sound_stream(device,format,sample_rate,buffer,callback,preserve,latency_seconds)
+    return open_sound_stream(device_configuration,sample_rate,buffer,callback,preserve,latency_seconds)
 end
 function get_destination_format(::Type{T}) where T
     T === Int16   && return SoundIoFormats[:Int16Little]
