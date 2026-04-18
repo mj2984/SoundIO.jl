@@ -65,18 +65,18 @@ function realtime_audio_callback(outstream_ptr::Ptr{StreamBaseType}, frames_min:
     commit_callback_buffer!(outstream_ptr)
     return nothing
 end
-function open_sound_stream(device::SoundIODevice{StreamBaseType}, format::Union{Symbol,Int32}, sample_rate::Integer, bufferspec::Tuple{Ptr{T}, Tuple{Integer, Integer}, Bool}, preserve::Any, latency_seconds::Float64 = 1.0) where {StreamBaseType,T<:Sample}
+function open_sound_stream(device_configuration::Tuple{SoundIODevice{StreamBaseType,Mode},SoundIoChannelLayout,Union{Symbol,Int32}}, sample_rate::Integer, bufferspec::Tuple{Ptr{T}, Tuple{Integer, Integer}, Bool}, preserve::Any, latency_seconds::Float64 = 1.0) where {StreamBaseType,Mode,T<:Sample}
     buffer = FrozenAudioBuffer(bufferspec...)
     callback = make_audio_callback(StreamBaseType,typeof(buffer),frozen_audio_callback)
-    return open_sound_stream(device, format, sample_rate, buffer, callback, preserve, latency_seconds)
+    return open_sound_stream(device_configuration, sample_rate, buffer, callback, preserve, latency_seconds)
 end
-function open_sound_stream(device::SoundIODevice{StreamBaseType}, format::Union{Symbol,Int32}, sample_rate::Integer, bufferspec::Type{<:Sample}, preserve::Any, latency_seconds::Float64 = 1.0) where {StreamBaseType}
+function open_sound_stream(device_configuration::Tuple{SoundIODevice{StreamBaseType,Mode},SoundIoChannelLayout,Union{Symbol,Int32}}, sample_rate::Integer, bufferspec::Type{<:Sample}, preserve::Any, latency_seconds::Float64 = 1.0) where {StreamBaseType,Mode}
     buffer = AudioCallbackSynchronizer(bufferspec)
     callback = make_audio_callback(StreamBaseType,typeof(buffer),realtime_audio_callback)
-    return open_sound_stream(device, format, sample_rate, buffer, callback, preserve, latency_seconds)
+    return open_sound_stream(device_configuration, sample_rate, buffer, callback, preserve, latency_seconds)
 end
-open_sound_stream(device::SoundIODevice, format::Union{Symbol,Int32}, sample_rate::Integer, bufferspec::Tuple{DataType,Integer}, preserve::Any, latency_seconds::Float64 = 1.0) = open_sound_stream(device,format,sample_rate,Sample{bufferspec[2],bufferspec[1]},preserve,latency_seconds)
-open_sound_stream(device::SoundIODevice, sample_rate::Integer, bufferspec, preserve::Any, latency_seconds::Float64 = 1.0) = open_sound_stream(device,get_destination_format(bufferspec),sample_rate,bufferspec,preserve,latency_seconds)
+open_sound_stream(device_configuration::Tuple{SoundIODevice,SoundIoChannelLayout,Union{Symbol,Int32}}, sample_rate::Integer, bufferspec::Tuple{DataType,Integer}, preserve::Any, latency_seconds::Float64 = 1.0) = open_sound_stream(device_configuration,sample_rate,Sample{bufferspec[2],bufferspec[1]},preserve,latency_seconds)
+open_sound_stream(device_configuration::Tuple{SoundIODevice,SoundIoChannelLayout}, sample_rate::Integer, bufferspec, preserve::Any, latency_seconds::Float64 = 1.0) = open_sound_stream((device_configuration[1],device_configuration[2],get_destination_format(bufferspec)),sample_rate,bufferspec,preserve,latency_seconds)
 is_pointer_safe(A::DenseArray) = true
 is_pointer_safe(A::SubArray) = Base.iscontiguous(A)
 is_pointer_safe(A::Base.ReinterpretArray{T,N,S,P}) where {T,N,S,P} = isbitstype(T) && is_pointer_safe(parent(A))
@@ -121,10 +121,10 @@ end
     end
     return ptr, (atom_frames, total_atoms)
 end
-function Base.open(device::SoundIODevice,format::Union{Symbol,Int32},bufferspec::B,latency_seconds::Float64 = 1.0) where {B<:FrozenBufferSpec}
+function Base.open(device_configuration::Tuple{SoundIODevice,SoundIoChannelLayout,Union{Symbol,Int32}},bufferspec::B,latency_seconds::Float64 = 1.0) where {B<:FrozenBufferSpec}
     validate_bufferspec(B)
     sample_rate, audio_data, isclearing = resolve_bufferspec(bufferspec)
     ptr, atom_dims::NTuple{2,Int} = compute_frozenbuffer_layout(audio_data)
-    return open_sound_stream(device,format,sample_rate,(ptr, atom_dims, isclearing),audio_data,latency_seconds)
+    return open_sound_stream(device_configuration,sample_rate,(ptr, atom_dims, isclearing),audio_data,latency_seconds)
 end
-Base.open(device::SoundIODevice,bufferspec::FrozenBufferSpec{T,N},latency_seconds::Float64 = 1.0) where {T,N} = open(device, get_destination_format(T), bufferspec, latency_seconds)
+Base.open(device_configuration::Tuple{SoundIODevice,SoundIoChannelLayout},bufferspec::FrozenBufferSpec{T,N},latency_seconds::Float64 = 1.0) where {T,N} = open((device_configuration[1],device_configuration[2],get_destination_format(T)), bufferspec, latency_seconds)
