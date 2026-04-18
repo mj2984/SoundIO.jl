@@ -7,6 +7,7 @@ struct SoundIoChannelLayout
     channel_count::Cint #Int32
     channels::NTuple{24, Cint} #NTuple{24, Int32}
 end
+export SoundIoChannelLayout
 # --- Playback Logic ---
 struct FrozenAudioLayout{T<:Sample,isatomic,isclearing} # The "Map": Immutable description of the static memory
     data_ptr::Ptr{T}
@@ -126,13 +127,15 @@ struct SoundIODevice{StreamBaseType,Access}
     name::String
     id::String
     is_default::Bool
+    layouts::Memory{SoundIoChannelLayout}
     streams::Vector{SoundIOStream{StreamBaseType,<:SoundIOSynchronizer}}
-    function SoundIODevice(ctx_ptr::Ptr{Cvoid}, device_ptr::Ptr{Cvoid}, name::String, id::String, is_input::Bool, is_default::Bool, is_raw::Bool)
+    function SoundIODevice(ctx_ptr::Ptr{Cvoid}, device_ptr::Ptr{Cvoid}, is_default::Bool)
+        c_dev = unsafe_load(convert(Ptr{SoundIoDevice_C}, device_ptr))
+        layouts, name, id, aim, is_raw = get_sound_device_parameters(c_dev)
         ccall((:soundio_device_ref, libsoundio), Cvoid, (Ptr{Cvoid},), device_ptr) # Increment C-ref count to keep memory alive while this Julia object exists
-        StreamBaseType = is_input ? InputSoundStream : OutputSoundStream
-        Access = is_raw ? :raw : :shared
-        return new{StreamBaseType,Access}(Ref(SoundIODevicePtrs(device_ptr, ctx_ptr)), name, id, is_default, Vector{SoundIOStream{StreamBaseType, <:SoundIOSynchronizer}}())
-        # Decrement Ref Count on GC
+        StreamBaseType = aim == 0 ? InputSoundStream : OutputSoundStream
+        Access = is_raw != 0 ? :raw : :shared
+        return new{StreamBaseType,Access}(Ref(SoundIODevicePtrs(device_ptr, ctx_ptr)), name, id, is_default, layouts, Vector{SoundIOStream{StreamBaseType, <:SoundIOSynchronizer}}())        # Decrement Ref Count on GC
         #=finalizer(dev) do d
             for s in d.streams
                 if(StreamBaseType == SoundIoOutputStream_C)
@@ -146,14 +149,12 @@ struct SoundIODevice{StreamBaseType,Access}
         return dev
         =#
     end
-    function SoundIODevice(ctx_ptr::Ptr{Cvoid}, device_ptr::Ptr{Cvoid}, is_default::Bool)
-        c_dev = unsafe_load(convert(Ptr{SoundIoDevice_C}, device_ptr))
-        name_str = unsafe_string(c_dev.name)
-        id_str   = unsafe_string(c_dev.id)
-        is_input = c_dev.aim == 0
-        is_raw = unsafe_load(convert(Ptr{UInt8}, device_ptr + SOUNDIO_DEVICE_IS_RAW_OFFSET)) == 0
-        return SoundIODevice(ctx_ptr, device_ptr, name_str, id_str, is_input, is_default, is_raw)
-    end
+end
+struct SoundIODeviceConfiguration{StreamBaseType,Access,fmt_type<:Union{Cint,Nothing},sample_rate_type<:Union{Integer,Nothing}}
+    device::SoundIODevice{StreamBaseType,Access}
+    layout::SoundIoChannelLayout
+    sample_rate::sample_rate_type
+    format::fmt_type
 end
 struct SoundIODeviceGroup{Access}
     inputs::Vector{SoundIODevice{InputSoundStream, Access}}
