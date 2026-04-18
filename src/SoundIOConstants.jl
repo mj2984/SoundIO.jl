@@ -2,11 +2,8 @@
 const libsoundio = libsoundio_jll.libsoundio_path
 const SoundIOBackendMemoryOffsetBytes = 32
 const SoundIOBackendNone = 0
-const SOUNDIO_DEVICE_FORMATS_OFFSET = 112
-const SOUNDIO_DEVICE_FORMAT_COUNT_OFFSET = 120
-const SOUNDIO_DEVICE_IS_RAW_OFFSET = 208
 # Little Endian (3 bytes), Big Endian
-const SoundIoFormats = Dict{Symbol, Int32}(
+const SoundIoFormats = Dict{Symbol, Cint}(
     :Invalid        => 0 ,
     :Int8           => 1 , :UInt8          => 2 ,
     :Int16Little    => 3 , :Int16Big       => 4 , :UInt16Little   => 5 , :UInt16Big      => 6 ,
@@ -15,7 +12,7 @@ const SoundIoFormats = Dict{Symbol, Int32}(
     :Float32Little  => 15, :Float32Big     => 16,
     :Float64Little  => 17, :Float64Big     => 18,
 )
-const SoundIoErrorMap = Dict{Int32, Symbol}(
+const SoundIoErrorMap = Dict{Cint, Symbol}(
     0  => :Success,
     1  => :OutOfMemory,
     2  => :BackendInitializationFailed,
