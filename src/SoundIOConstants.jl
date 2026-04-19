@@ -12,6 +12,7 @@ const SoundIoFormats = Dict{Symbol, Cint}(
     :Float32Little  => 15, :Float32Big     => 16,
     :Float64Little  => 17, :Float64Big     => 18,
 )
+const FORMAT_LOOKUP = Dict(val => sym for (sym, val) in SoundIoFormats)
 const SoundIoErrorMap = Dict{Cint, Symbol}(
     0  => :Success,
     1  => :OutOfMemory,
