@@ -1,8 +1,8 @@
 using SamplesCore, SoundIO, WavNative
 #using PtrArrays
 # Frozen Audio Buffer Example.
-function play_audio(device::SoundIODevice, audio_data::AbstractDomainArray)
-    stream = open(device, (audio_data, false)) # The stream captures the audio data from being Garbage collected.
+function play_audio(device_configuration::SoundIODeviceConfiguration, audio_data::AbstractDomainArray)
+    stream = open(device_configuration, (audio_data, false)) # The stream captures the audio data from being Garbage collected.
     buffer_stream = stream.sync[].stream::FrozenAudioStream
     start!(stream) #println("🔊 Playback started. Press Ctrl+C to stop.")
     try
