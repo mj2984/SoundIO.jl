@@ -229,12 +229,10 @@ my_sync = MyCustomBuffer(zeros(Float32, 1024), CallbackJuliaDone)
 # 2. Open the stream
 # 'my_sync.data' is preserved to ensure the GC doesn't move it during playback
 stream = open_sound_stream(
-    device, 
+    device_configuration, # Contains device, layout, sample rate, format
     my_sync, 
     frozen_audio_callback, 
-    my_sync.data, 
-    44100, 
-    :Float32Little
+    my_sync.data
 )
 
 # 3. Start the hardware clock
@@ -245,7 +243,7 @@ start!(stream)
 Because `SoundIO.jl` leverages Julia's dispatch system, you can create convenient `Base.open` wrappers. This allows the library to automatically infer parameters from your data structures:
 
 ```julia
-function Base.open(device::SoundIODevice, data::AbstractArray{T, N}, sample_rate::Integer) where {T, N}
+function Base.open(device_configuration::SoundIODeviceConfiguration, data::AbstractArray{T, N}, sample_rate::Integer) where {T, N}
     # Validate that memory is contiguous for unsafe pointers
     if !is_pointer_safe(data)
         error("Non-contiguous arrays (slices) are not supported.")
@@ -257,7 +255,7 @@ function Base.open(device::SoundIODevice, data::AbstractArray{T, N}, sample_rate
     
     # 'data' is passed twice: once as the source and once to the 'preserve' 
     # argument to ensure GC safety while the hardware thread is active.
-    return open_sound_stream(device, data, frozen_audio_callback, data, sample_rate, :Float32Little)
+    return open_sound_stream(device_configuration, data, frozen_audio_callback, data, sample_rate, :Float32Little)
 end
 ```
 ## 🛡️ Developer Best Practices for the "Hot Path"
