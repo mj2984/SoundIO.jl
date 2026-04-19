@@ -104,7 +104,7 @@ function start_loop(input_stream,output_stream)
     end
 end
 
-sampling_frequency = 48000
+sampling_frequency = TypedDomainSpace{48000}()
 buffer_atom_time = 0.5 # Notifications are sent every buffer_atom_time seconds.
 total_buffer_atoms = 10 # It goes through 10 such cyles before looping back. (in many cases 2-3 is sufficient)
 shared_data = domainzeros(to_sample_space,Sample{2,Q0f15},(buffer_atom_time,relativeorigin,sampling_frequency),total_buffer_atoms) # Pre allocate the array for buffering.
