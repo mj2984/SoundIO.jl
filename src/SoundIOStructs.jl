@@ -126,15 +126,16 @@ struct SoundIODevice{StreamBaseType,Access}
     name::String
     id::String
     is_default::Bool
+    formats::Memory{Cint}
     layouts::Memory{SoundIoChannelLayout}
     streams::Vector{SoundIOStream{StreamBaseType,<:SoundIOSynchronizer}}
     function SoundIODevice(ctx_ptr::Ptr{Cvoid}, device_ptr::Ptr{Cvoid}, is_default::Bool)
         c_dev = unsafe_load(convert(Ptr{SoundIoDevice_C}, device_ptr))
-        layouts, name, id, aim, is_raw = get_sound_device_parameters(c_dev)
+        formats, layouts, name, id, aim, is_raw = get_sound_device_parameters(c_dev)
         ccall((:soundio_device_ref, libsoundio), Cvoid, (Ptr{Cvoid},), device_ptr) # Increment C-ref count to keep memory alive while this Julia object exists
         StreamBaseType = aim == 0 ? InputSoundStream : OutputSoundStream
         Access = is_raw != 0 ? :raw : :shared
-        return new{StreamBaseType,Access}(Ref(SoundIODevicePtrs(device_ptr, ctx_ptr)), name, id, is_default, layouts, Vector{SoundIOStream{StreamBaseType, <:SoundIOSynchronizer}}())        # Decrement Ref Count on GC
+        return new{StreamBaseType,Access}(Ref(SoundIODevicePtrs(device_ptr, ctx_ptr)), name, id, is_default, formats, layouts, Vector{SoundIOStream{StreamBaseType, <:SoundIOSynchronizer}}())        # Decrement Ref Count on GC
         #=finalizer(dev) do d
             for s in d.streams
                 if(StreamBaseType == SoundIoOutputStream_C)
