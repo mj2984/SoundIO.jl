@@ -1,20 +1,22 @@
+Base.pointer(A::DomainArray) = pointer(A.data)
 const layout_input_types = Union{SoundIoChannelLayout,Integer}
 SoundIODeviceConfiguration(device::SoundIODevice,layout::layout_input_types,format::Union{Type{T},Symbol}) where {T} = SoundIODeviceConfiguration(device,layout,nothing,format)
 SoundIODeviceConfiguration(device::SoundIODevice,layout::layout_input_types,sample_rate::Integer) = SoundIODeviceConfiguration(device,layout,sample_rate,nothing)
 SoundIODeviceConfiguration(device::SoundIODevice,layout::layout_input_types) = SoundIODeviceConfiguration(device,layout,nothing,nothing)
-function load_sound_channel_layouts(c_dev::SoundIoDevice_C)
-    total = c_dev.layouts == C_NULL ? 0 : Int(c_dev.layout_count)
-    mem = Memory{SoundIoChannelLayout}(undef, total)
+function get_sound_device_parameter(::Type{T},parameter_pointer,parameter_count) where {T}
+    total = parameter_pointer == C_NULL ? 0 : Int(parameter_count)
+    mem = Memory{T}(undef, total)
     if total > 0
-        unsafe_copyto!(pointer(mem), c_dev.layouts, total)
+        unsafe_copyto!(pointer(mem), parameter_pointer, total)
     end
     return mem
 end
 function get_sound_device_parameters(c_dev::SoundIoDevice_C)
-    layouts = load_sound_channel_layouts(c_dev)
+    formats = get_sound_device_parameter(Cint,c_dev.formats,c_dev.format_count)
+    layouts = get_sound_device_parameter(SoundIoChannelLayout,c_dev.layouts,c_dev.layout_count)
     name_str = unsafe_string(c_dev.name)
     id_str   = unsafe_string(c_dev.id)
-    return layouts, name_str, id_str, c_dev.aim, c_dev.is_raw
+    return formats, layouts, name_str, id_str, c_dev.aim, c_dev.is_raw
 end
 # --- The Audio Callback (Native Thread) ---
 @inline userdata_offset(::Type{InputSoundStream})  = SOUNDIO_INPUTSTREAM_USERDATA_OFFSET
@@ -295,25 +297,6 @@ end
     deleteat!(stream,stream_enumeration)
 end
 #check_soundio_err(ccall((:soundio_outstream_start, libsoundio), Cint, (Ptr{Cvoid},), out_ptr))
-function supported_formats(device::SoundIODevice)
-    formats = Symbol[]
-    device_ptr = device.ptrs[].device
-    device_ptr == C_NULL && return formats
-    count_ptr = convert(Ptr{Cint}, device_ptr + SOUNDIO_DEVICE_FORMAT_COUNT_OFFSET)
-    count = unsafe_load(count_ptr)
-    # 2. Read the pointer to the formats array (enum SoundIoFormat*)
-    formats_ptr_ptr = convert(Ptr{Ptr{Cint}}, device_ptr + SOUNDIO_DEVICE_FORMATS_OFFSET)
-    formats_array_ptr = unsafe_load(formats_ptr_ptr)
-    if formats_array_ptr != C_NULL
-        for i in 0:(count-1)
-            f_int = unsafe_load(formats_array_ptr, i + 1)
-            for (sym, val) in SoundIoFormats
-                val == f_int && push!(formats, sym)
-            end
-        end
-    end
-    return formats
-end
 @inline Base.wait(stream::FrozenAudioStream) = wait(stream.notify_handle)
 @inline Base.wait(sync::AudioCallbackSynchronizer) = wait(sync.notify_handle)
 @inline get_exchange(stream::FrozenAudioStream) = @atomic stream.exchange
