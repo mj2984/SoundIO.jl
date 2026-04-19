@@ -1,12 +1,22 @@
-function Base.show(io::IO, dev::SoundIODevice{StreamBaseType}) where {StreamBaseType}
-    icon = StreamBaseType == SoundIoInputStream_C ? "🎤" : "🎧"
-    mode_icon = dev.is_raw ? "🔗" : "  "
+const mode_icons = Dict{Symbol,String}(:shared => " ",:raw => "🔗")
+function Base.show(io::IO, dev::SoundIODevice{StreamBaseType,Access}) where {StreamBaseType,Access}
+    icon = StreamBaseType == InputSoundStream ? "🎤" : "🎧"
+    mode_icon = mode_icons[Access]
     default_mark = dev.is_default ? " ⭐" : ""
     print(io, "$icon [$mode_icon] $(dev.name)$default_mark")
     if !get(io, :compact, false)
-        fmts = supported_formats(dev)
-        if !isempty(fmts)
-            print(io, "\n      └─ Formats: $(join(fmts, ", "))")
+        if length(dev.formats) > 0
+            print(io, "\n      └─ Formats: ")
+            first = true
+            for f_int in dev.formats
+                sym = FORMAT_LOOKUP[f_int]
+                if first
+                    print(io, sym)
+                    first = false
+                else
+                    print(io, ", ", sym)
+                end
+            end
         end
         if !isempty(dev.streams)
             print(io, "\n      └─ Active Streams: $(length(dev.streams))")
@@ -36,8 +46,8 @@ function Base.show(io::IO, s::SoundIOStream{S, T}) where {S, T}
             break
         end
     end
-    stream_type = S === SoundIoInputStream_C ? "InStream" : "OutStream"
-    icon = S === SoundIoInputStream_C ? "🎙️ " : "🔊 "
+    stream_type = S === InputSoundStream ? "InStream" : "OutStream"
+    icon = S === OutputSoundStream ? "🎙️ " : "🔊 "
     print(io, "$icon $stream_type($(s.rate)Hz, :$fmt_sym) [Ptr: $(s.ptr)]")
 end
 function Base.show(io::IO, layout::SoundIoChannelLayout)
