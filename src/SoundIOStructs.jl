@@ -160,7 +160,7 @@ struct SoundIODeviceConfiguration{StreamBaseType,Access,fmt_type<:Union{Cint,Not
     sample_rate::sample_rate_type
     format::fmt_type
     function SoundIODeviceConfiguration(device::SoundIODevice{StreamBaseType,Access},layout::Union{SoundIoChannelLayout,Integer},sample_rate::Union{Integer,Nothing},format::Union{Type{T},Symbol,Integer,Nothing}) where {StreamBaseType,Access,T}
-        layout_resolved = layout isa SoundIoChannelLayout ? layout : device.layout[layout]
+        layout_resolved = layout isa SoundIoChannelLayout ? layout : device.layouts[layout]
         sample_rate_resolved = sample_rate isa Nothing ? nothing : Cint(sample_rate)
         format_resolved = resolve_soundio_format(format)
         new{StreamBaseType,Access,typeof(sample_rate_resolved),typeof(format_resolved)}(device,layout_resolved,sample_rate_resolved,format_resolved)
