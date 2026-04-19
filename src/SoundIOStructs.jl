@@ -7,7 +7,6 @@ struct SoundIoChannelLayout
     channel_count::Cint #Int32
     channels::NTuple{24, Cint} #NTuple{24, Int32}
 end
-export SoundIoChannelLayout
 # --- Playback Logic ---
 struct FrozenAudioLayout{T<:Sample,isatomic,isclearing} # The "Map": Immutable description of the static memory
     data_ptr::Ptr{T}
@@ -150,11 +149,21 @@ struct SoundIODevice{StreamBaseType,Access}
         =#
     end
 end
-struct SoundIODeviceConfiguration{StreamBaseType,Access,fmt_type<:Union{Cint,Nothing},sample_rate_type<:Union{Integer,Nothing}}
+resolve_soundio_format(::Nothing) = nothing
+resolve_soundio_format(::Type{T}) where {T} = get_destination_format(T)
+resolve_soundio_format(format::Symbol) = get_destination_format(format)
+resolve_soundio_format(format::Integer) = Cint(format)
+struct SoundIODeviceConfiguration{StreamBaseType,Access,fmt_type<:Union{Cint,Nothing},sample_rate_type<:Union{Cint,Nothing}}
     device::SoundIODevice{StreamBaseType,Access}
     layout::SoundIoChannelLayout
     sample_rate::sample_rate_type
     format::fmt_type
+    function SoundIODeviceConfiguration(device::SoundIODevice{StreamBaseType,Access},layout::Union{SoundIoChannelLayout,Integer},sample_rate::Union{Integer,Nothing},format::Union{Type{T},Symbol,Integer,Nothing}) where {StreamBaseType,Access,T}
+        layout_resolved = layout isa SoundIoChannelLayout ? layout : device.layout[layout]
+        sample_rate_resolved = sample_rate isa Nothing ? nothing : Cint(sample_rate)
+        format_resolved = resolve_soundio_format(format)
+        new{StreamBaseType,Access,typeof(sample_rate_resolved),typeof(format_resolved)}(device,layout_resolved,sample_rate_resolved,format_resolved)
+    end
 end
 struct SoundIODeviceGroup{Access}
     inputs::Vector{SoundIODevice{InputSoundStream, Access}}
