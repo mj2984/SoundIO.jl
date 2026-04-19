@@ -73,12 +73,14 @@ The following example demonstrates a **deterministic, bidirectional loopback** u
 ```julia
 using SamplesCore, SoundIO
 function get_sound_devices()
-    enumerate_sound_devices!() # Gets OS permissions and scans available sound devices
-    all_devices = list_sound_devices() # Displays available sound devices
+    enumerate_devices!(sounddevices) # Gets OS permissions and scans available sound devices
+    all_devices = list_devices(sounddevices) # Displays available sound devices
     # Getting raw (unprocessed) devices for input and output. Here it connects to the first numbered device it found.
-    input_device  = filter(d -> d.is_input && d.is_raw, all_devices)[1]
-    output_device = filter(d -> !d.is_input && d.is_raw, all_devices)[1]
-    return input_device,output_device
+    input_device  = all_devices.inputs[1]
+    input_layout = input_device.layouts[1]
+    output_device = all_devices.outputs[1]
+    output_layout = output_device.layouts[1]
+    return SoundIODeviceConfiguration(input_device,input_layout),SoundIODeviceConfiguration(output_device,output_layout)
 end
 
 function start_loop(input_stream,output_stream)
@@ -107,10 +109,10 @@ buffer_atom_time = 0.5 # Notifications are sent every buffer_atom_time seconds.
 total_buffer_atoms = 10 # It goes through 10 such cyles before looping back. (in many cases 2-3 is sufficient)
 shared_data = domainzeros(Sample{2,Q0f15},(buffer_atom_time,sampling_frequency),total_buffer_atoms) # Pre allocate the array for buffering.
 
-input_device, output_device = get_sound_devices()
+input_device_configuration, output_device_configuration = get_sound_devices()
 # Opening streams. This gets connections to a sound device and ensures the device is active. Opening a stream with this API locks the shared_data array from being garbage collected.
-input_stream  = open(input_device,  (shared_data, false))
-output_stream = open(output_device, (shared_data, false))
+input_stream  = open(input_device_configuration,  (shared_data, false))
+output_stream = open(output_device_configuration, (shared_data, false))
 
 Threads.@spawn start_loop(input_stream,output_stream)
 # At any moment you could peek into shared_data and see the actual data.
@@ -119,7 +121,7 @@ Threads.@spawn start_loop(input_stream,output_stream)
 2. Playing Wav files
 ```julia
 using SamplesCore, WavNative, SoundIO
-function play_audio(device::SoundIODevice, audio_data::DomainArray)
+function play_audio(device::SoundIODeviceConfiguration, audio_data::DomainArray)
     stream = open(device, (audio_data, false)) # The stream captures the audio data from being Garbage collected.
     buffer_stream = stream.sync[].stream::FrozenAudioStream
     start!(stream) #println("🔊 Playback started. Press Ctrl+C to stop.")
@@ -137,12 +139,14 @@ function play_audio(device::SoundIODevice, audio_data::DomainArray)
 end
 
 sound_file = raw"sound_file.wav"
-enumerate_sound_devices!()
-audio_device::SoundIODevice = filter(d -> (!d.is_input) & (d.is_raw), list_sound_devices())[1]
+enumerate_devices!(sounddevices)
+audio_device::SoundIODevice = list_devices(sounddevices).outputs[1]
+layout = audio_device.layouts[1]
+audio_device_configuration = SoundIODeviceConfiguration(audio_device,layout)
 println("🎶 Playing: $sound_file")
 audio_data::DomainArray = audioread(sound_file,false) # DomainArray contains information about sample rate.
 audio_view = view(audio_data,0:10) # range provided in domain axis. Here it provides the first 10 seconds.
-play_audio(audio_device,audio_view)
+play_audio(audio_device_configuration,audio_view)
 println("Finished!")
 ```
 More demo code can be found at \test
