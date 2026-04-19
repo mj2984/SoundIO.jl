@@ -80,9 +80,8 @@ open_sound_stream(device_configuration::Tuple{SoundIODevice,SoundIoChannelLayout
 is_pointer_safe(A::DenseArray) = true
 is_pointer_safe(A::SubArray) = Base.iscontiguous(A)
 is_pointer_safe(A::Base.ReinterpretArray{T,N,S,P}) where {T,N,S,P} = isbitstype(T) && is_pointer_safe(parent(A))
-is_pointer_safe(A::AbstractArray) = false
 is_pointer_safe(A::DomainArray) = is_pointer_safe(A.data)
-Base.pointer(A::DomainArray) = pointer(A.data)
+is_pointer_safe(A::AbstractArray) = false
 @inline function validate_bufferspec(::AbstractArray{T,N}) where {T,N}
     if T <: Sample
         if N < 1
