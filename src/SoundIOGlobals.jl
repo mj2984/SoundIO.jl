@@ -1,22 +1,21 @@
-const GLOBAL_CONTEXT = Ref{Union{Nothing, SoundIOContext}}(nothing)
+const GLOBAL_CONTEXT = Ref{Union{Nothing, SoundDeviceContext}}(nothing)
 
 function get_context()
     if GLOBAL_CONTEXT[] === nothing || !isopen(GLOBAL_CONTEXT[])
-        GLOBAL_CONTEXT[] = SoundIOContext()
+        GLOBAL_CONTEXT[] = SoundDeviceContext()
         connect!(GLOBAL_CONTEXT[])
     end
     return GLOBAL_CONTEXT[]
 end
 
 # Now you can simplify the API:
-enumerate_devices!(::SoundDevices) = enumerate_devices!(get_context())
-list_devices(::SoundDevices) = list_devices(GLOBAL_CONTEXT[])
-list_devices(::SoundDevices, access::SoundAccessType) = list_devices(GLOBAL_CONTEXT[], access)
+enumerate_devices!(::Sound_Devices) = enumerate_devices!(get_context())
+list_devices(::Sound_Devices, access::SoundAccessType=rawsoundaccess) = list_devices(GLOBAL_CONTEXT[], access)
 function with_context(f::Function)
     if GLOBAL_CONTEXT[] !== nothing && isopen(GLOBAL_CONTEXT[])
         return f(GLOBAL_CONTEXT[]) # Borrow
     else
-        ctx = SoundIOContext() # Own
+        ctx = SoundDeviceContext() # Own
         try
             connect!(ctx)
             GLOBAL_CONTEXT[] = ctx
@@ -46,7 +45,7 @@ function with_context(f::Function)
 end
 =#
 
-struct SoundIOError <: Exception
+struct SoundDeviceError <: Exception
     code::Int32
 end
 
@@ -59,11 +58,11 @@ end
 #    result == 0 || throw(SoundIOError(result))
 #end
 
-function Base.showerror(io::IO, e::SoundIOError)
-    sym = get(SoundIoErrorMap, e.code, :UnknownError)
+function Base.showerror(io::IO, e::SoundDeviceError)
+    sym = get(SoundDeviceErrorMap, e.code, :UnknownError)
     c_msg_ptr = ccall((:soundio_strerror, libsoundio), Ptr{Cchar}, (Cint,), e.code)
     msg = c_msg_ptr != C_NULL ? unsafe_string(c_msg_ptr) : "No message provided."
-    print(io, "SoundIOError [:$sym]: $msg (Code: $(e.code))")
+    print(io, "SoundDeviceError [:$sym]: $msg (Code: $(e.code))")
 end
 
 #function open_sound_stream_error_check(result::Cint)
