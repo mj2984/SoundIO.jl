@@ -1,9 +1,9 @@
 # Pre-resolving the memory address of the function to bypass lookup in the shared library's symbol table.
 const libsoundio = libsoundio_jll.libsoundio_path
-const SoundIOBackendMemoryOffsetBytes = 32
-const SoundIOBackendNone = 0
+const SoundDeviceBackendMemoryOffsetBytes = 32
+const SoundDeviceBackendNone = 0
 # Little Endian (3 bytes), Big Endian
-const SoundIoFormats = Dict{Symbol, Cint}(
+const SoundDeviceFormats = Dict{Symbol, Cint}(
     :Invalid        => 0 ,
     :Int8           => 1 , :UInt8          => 2 ,
     :Int16Little    => 3 , :Int16Big       => 4 , :UInt16Little   => 5 , :UInt16Big      => 6 ,
@@ -12,8 +12,8 @@ const SoundIoFormats = Dict{Symbol, Cint}(
     :Float32Little  => 15, :Float32Big     => 16,
     :Float64Little  => 17, :Float64Big     => 18,
 )
-const FORMAT_LOOKUP = Dict(val => sym for (sym, val) in SoundIoFormats)
-const SoundIoErrorMap = Dict{Cint, Symbol}(
+const FORMAT_LOOKUP = Dict(val => sym for (sym, val) in SoundDeviceFormats)
+const SoundDeviceErrorMap = Dict{Cint, Symbol}(
     0  => :Success,
     1  => :OutOfMemory,
     2  => :BackendInitializationFailed,
