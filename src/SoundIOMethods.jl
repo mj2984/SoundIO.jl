@@ -233,13 +233,14 @@ function open_sound_stream(device_configuration::SoundDeviceConfiguration{Stream
     callback = make_audio_callback(StreamBaseType,T,callback_function)
     return open_sound_stream(device_configuration,buffer,callback,preserve)
 end
-function get_destination_format(format::Symbol)
+@inline get_destination_format(format::Integer) = Cint(format)
+@inline function get_destination_format(format::Symbol)
     if !haskey(SoundDeviceFormats, format)
         error("Unknown Sound Device format: :$format. Available: $(keys(SoundDeviceFormats))")
     end
     return SoundDeviceFormats[format]
 end
-function get_destination_format(::Type{T}) where T
+@inline function get_destination_format(::Type{T}) where T
     T === Int16   && return SoundDeviceFormats[:Int16Little]
     T === Int32   && return SoundDeviceFormats[:Int32Little]
     T === Int24   && return SoundDeviceFormats[:Int24Little]
@@ -248,8 +249,8 @@ function get_destination_format(::Type{T}) where T
     # Fallback for types that aren't leaf-level integers/floats
     error("No audio format mapping for type: $T")
 end
-get_destination_format(::Type{<:Fixed{T, f}}) where {T, f} = get_destination_format(T)
-get_destination_format(::Type{Sample{N, T}}) where {N, T} = get_destination_format(T)
+@inline get_destination_format(::Type{<:Fixed{T, f}}) where {T, f} = get_destination_format(T)
+@inline get_destination_format(::Type{Sample{N, T}}) where {N, T} = get_destination_format(T)
 
 # 4. Resume existing stream. (Streams persist over context changes)
 function reopen!(stream::SoundDeviceStream)
