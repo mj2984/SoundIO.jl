@@ -1,7 +1,9 @@
 using SamplesCore, SoundIO, WavNative
 #using PtrArrays
+get_audio_sample_rate(audio_data::AbstractDomainArray{T,N}) where {T,N} = (T <: Sample) ? interpret_rate(rate(audio_data,1)) : interpret_rate(rate(audio_data,2))
 # Frozen Audio Buffer Example.
-function play_audio(device_configuration::SoundIODeviceConfiguration, audio_data::AbstractDomainArray)
+function play_audio(device::SoundDevice,layout::SoundDeviceChannelLayout,audio_data::AbstractDomainArray{T,N}) where {T,N}
+    device_configuration = SoundDeviceConfiguration(device,layout,get_audio_sample_rate(audio_data),T)
     stream = open(device_configuration, (audio_data, false)) # The stream captures the audio data from being Garbage collected.
     buffer_stream = stream.sync[].stream::FrozenAudioStream
     start!(stream) #println("🔊 Playback started. Press Ctrl+C to stop.")
@@ -55,8 +57,9 @@ function audio_streamer_ram_playback(sync::AudioCallbackSynchronizer{T, Channels
     halt_sound_buffer(sync)
 end
 # Uses the audio_streamer_ram_playback to manage streaming.
-function play_audio_threaded(device_configuration::SoundIODeviceConfiguration, audio_data::AbstractDomainArray{T,N}) where {T<:Sample,N}
-    stream = SoundIO.open_sound_stream(SoundIODeviceConfiguration(device_configuration.device, device_configuration.layout, audio_data.rate[1],T), T, nothing)
+function play_audio_threaded(device::SoundDevice, layout::SoundDeviceChannelLayout, audio_data::AbstractDomainArray{T,N}) where {T<:Sample,N}
+    device_configuration = SoundDeviceConfiguration(device,layout,get_audio_sample_rate(audio_data),T)
+    stream = SoundIO.open_sound_stream(device_configuration, T, nothing)
     sync = stream.sync[]
     worker_task = Threads.@spawn :interactive audio_streamer_ram_playback(sync, audio_data.data)
     start!(stream)
