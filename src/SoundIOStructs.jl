@@ -151,7 +151,9 @@ struct SoundDeviceConfiguration{StreamBaseType,Access}
     sample_rate::Cint
     format::Cint
     latency::Cdouble
-    SoundDeviceConfiguration(device::SoundDevice{StreamBaseType,Access},layout::Union{SoundDeviceChannelLayout,Integer},sample_rate::Number,format::Union{Type{T},Symbol,Integer},latency::Number=1.0) where {StreamBaseType,Access,T} = new{StreamBaseType,Access}(device,layout isa SoundDeviceChannelLayout ? layout : device.layouts[layout],Cint(sample_rate),get_destination_format(format),Cdouble(latency))
+    SoundDeviceConfiguration(device::SoundDevice{StreamBaseType,Access},layout::SoundDeviceChannelLayout,sample_rate::Number,format::Integer,latency::Number=1.0) where {StreamBaseType,Access} = new{StreamBaseType,Access}(device,layout,Cint(sample_rate),format,Cdouble(latency))
+    SoundDeviceConfiguration(device::SoundDevice{StreamBaseType,Access},layout::SoundDeviceChannelLayout,sample_rate::Number,format::Type{T},latency::Number=1.0) where {StreamBaseType,Access,T} = SoundDeviceConfiguration(device,layout,sample_rate,get_destination_format(format),latency)
+    SoundDeviceConfiguration(device::SoundDevice{StreamBaseType,Access},layout::SoundDeviceChannelLayout,sample_rate::Number,format::Symbol,latency::Number=1.0) where {StreamBaseType,Access} = SoundDeviceConfiguration(device,layout,sample_rate,get_destination_format(format),latency)
 end
 struct SoundDeviceGroup{Access}
     inputs::Vector{SoundDevice{InputSoundStream, Access}}
