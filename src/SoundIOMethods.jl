@@ -233,7 +233,6 @@ function open_sound_stream(device_configuration::SoundDeviceConfiguration{Stream
     callback = make_audio_callback(StreamBaseType,T,callback_function)
     return open_sound_stream(device_configuration,buffer,callback,preserve)
 end
-@inline get_destination_format(format::Integer) = Cint(format)
 @inline function get_destination_format(format::Symbol)
     if !haskey(SoundDeviceFormats, format)
         error("Unknown Sound Device format: :$format. Available: $(keys(SoundDeviceFormats))")
