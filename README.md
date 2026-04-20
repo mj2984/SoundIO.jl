@@ -72,15 +72,15 @@ The following example demonstrates a **deterministic, bidirectional loopback** u
 1. Loopback test.
 ```julia
 using SamplesCore, SoundIO
-function get_sound_devices()
+get_audio_sample_rate(audio_data::AbstractDomainArray{T,N}) where {T,N} = (T <: Sample) ? interpret_rate(rate(audio_data,1)) : interpret_rate(rate(audio_data,2))
+function get_sound_devices(shared_data::AbstractDomainArray{T,N}) where {T,N}
     enumerate_devices!(sounddevices) # Gets OS permissions and scans available sound devices
     all_devices = list_devices(sounddevices) # Displays available sound devices
     # Getting raw (unprocessed) devices for input and output. Here it connects to the first numbered device it found.
-    input_device  = all_devices.inputs[1]
-    input_layout = input_device.layouts[1]
-    output_device = all_devices.outputs[1]
-    output_layout = output_device.layouts[1]
-    return SoundIODeviceConfiguration(input_device,input_layout),SoundIODeviceConfiguration(output_device,output_layout)
+    input_device,output_device = all_devices.inputs[1], all_devices.outputs[1]
+    input_layout,output_layout = input_device.layouts[1], output_device.layouts[1]
+    sample_rate = get_audio_sample_rate(shared_data)
+    return SoundIODeviceConfiguration(input_device,input_layout,sample_rate,T),SoundIODeviceConfiguration(output_device,output_layout,sample_rate,T)
 end
 
 function start_loop(input_stream,output_stream)
@@ -105,11 +105,11 @@ function start_loop(input_stream,output_stream)
 end
 
 sampling_frequency = TypedDomainSpace{48000}()
-buffer_atom_time = 0.5 # Notifications are sent every buffer_atom_time seconds.
+buffer_atom_time = 0.1 # Notifications are sent every buffer_atom_time seconds.
 total_buffer_atoms = 10 # It goes through 10 such cyles before looping back. (in many cases 2-3 is sufficient)
 shared_data = domainzeros(to_sample_space,Sample{2,Q0f15},(buffer_atom_time,relativeorigin,sampling_frequency),total_buffer_atoms) # Pre allocate the array for buffering.
 
-input_device_configuration, output_device_configuration = get_sound_devices()
+input_device_configuration, output_device_configuration = get_sound_devices(shared_data)
 # Opening streams. This gets connections to a sound device and ensures the device is active. Opening a stream with this API locks the shared_data array from being garbage collected.
 input_stream  = open(input_device_configuration,  (shared_data, false))
 output_stream = open(output_device_configuration, (shared_data, false))
@@ -121,8 +121,10 @@ Threads.@spawn start_loop(input_stream,output_stream)
 2. Playing Wav files
 ```julia
 using SamplesCore, WavNative, SoundIO
-function play_audio(device::SoundIODeviceConfiguration, audio_data::DomainArray)
-    stream = open(device, (audio_data, false)) # The stream captures the audio data from being Garbage collected.
+get_audio_sample_rate(audio_data::AbstractDomainArray{T,N}) where {T,N} = (T <: Sample) ? interpret_rate(rate(audio_data,1)) : interpret_rate(rate(audio_data,2))
+function play_audio(device::SoundDevice,layout::SoundDeviceChannelLayout,audio_data::AbstractDomainArray{T,N}) where {T,N}
+    device_configuration = SoundDeviceConfiguration(device,layout,get_audio_sample_rate(audio_data),T)
+    stream = open(device_configuration, (audio_data, false)) # The stream captures the audio data from being Garbage collected.
     buffer_stream = stream.sync[].stream::FrozenAudioStream
     start!(stream) #println("🔊 Playback started. Press Ctrl+C to stop.")
     try
@@ -139,14 +141,13 @@ function play_audio(device::SoundIODeviceConfiguration, audio_data::DomainArray)
 end
 
 sound_file = raw"sound_file.wav"
-enumerate_devices!(sounddevices)
-audio_device::SoundIODevice = list_devices(sounddevices).outputs[1]
+enumerate_devices!(sound_devices)
+audio_device::SoundDevice = list_devices(sound_devices).outputs[1]
 layout = audio_device.layouts[1]
-audio_device_configuration = SoundIODeviceConfiguration(audio_device,layout)
 println("🎶 Playing: $sound_file")
 audio_data::DomainArray = audioread(sound_file,false) # DomainArray contains information about sample rate.
-audio_view = view(audio_data,0:10) # range provided in domain axis. Here it provides the first 10 seconds.
-play_audio(audio_device_configuration,audio_view)
+#audio_view = view(audio_data,0:10) # range provided in domain axis. Here it provides the first 10 seconds.
+play_audio(audio_device,layout,audio_data)
 println("Finished!")
 ```
 More demo code can be found at \test
