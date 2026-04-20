@@ -10,7 +10,7 @@ include("SoundIOMethods.jl")
 include("SoundIOBaseCallbacks.jl")
 include("SoundIOGlobals.jl")
 export SoundDeviceContext, SoundDevice, SoundDeviceChannelLayout, SoundDeviceConfiguration,
-       SoundDeviceOutStream, FrozenAudioStream, FrozenAudioExchange, get_destination_format,
+       SoundDeviceOutStream, FrozenAudioStream, FrozenAudioExchange,
        SoundDeviceSynchronizer, AudioCallbackSynchronizer,
        is_connected_unsafe, is_connected,open_unsafe!, open!, connect_unsafe!, connect!,
        disconnect_unsafe!, disconnect!, flush_events_unsafe!, flush_events!, wait_unsafe,
