@@ -80,7 +80,7 @@ function get_sound_devices(shared_data::AbstractDomainArray{T,N}) where {T,N}
     input_device,output_device = all_devices.inputs[1], all_devices.outputs[1]
     input_layout,output_layout = input_device.layouts[1], output_device.layouts[1]
     sample_rate = get_audio_sample_rate(shared_data)
-    return SoundIODeviceConfiguration(input_device,input_layout,sample_rate,T),SoundIODeviceConfiguration(output_device,output_layout,sample_rate,T)
+    return SoundDeviceConfiguration(input_device,input_layout,sample_rate,T),SoundDeviceConfiguration(output_device,output_layout,sample_rate,T)
 end
 
 function start_loop(input_stream,output_stream)
