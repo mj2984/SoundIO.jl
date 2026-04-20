@@ -74,8 +74,8 @@ The following example demonstrates a **deterministic, bidirectional loopback** u
 using SamplesCore, SoundIO
 get_audio_sample_rate(audio_data::AbstractDomainArray{T,N}) where {T,N} = (T <: Sample) ? interpret_rate(rate(audio_data,1)) : interpret_rate(rate(audio_data,2))
 function get_sound_devices(shared_data::AbstractDomainArray{T,N}) where {T,N}
-    enumerate_devices!(sounddevices) # Gets OS permissions and scans available sound devices
-    all_devices = list_devices(sounddevices) # Displays available sound devices
+    enumerate_devices!(sound_devices) # Gets OS permissions and scans available sound devices
+    all_devices = list_devices(sound_devices) # Displays available sound devices
     # Getting raw (unprocessed) devices for input and output. Here it connects to the first numbered device it found.
     input_device,output_device = all_devices.inputs[1], all_devices.outputs[1]
     input_layout,output_layout = input_device.layouts[1], output_device.layouts[1]
