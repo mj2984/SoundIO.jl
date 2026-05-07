@@ -59,7 +59,7 @@ end
 @inline SoundDevice_isopen_context(ctx_ptr) = ctx_ptr != C_NULL
 @inline Base.isopen(ctx::SoundDeviceContext) = SoundDevice_isopen_context(ctx.ptr[])
 # Connectivity
-is_connected_unsafe(ctx::SoundDeviceContext) = unsafe_load(convert(Ptr{Cint}, ctx.ptr[] + SoundDeviceBackendMemoryOffsetBytes)) != SoundDeviceBackendNone
+is_connected_unsafe(ctx::SoundDeviceContext) = unsafe_load(convert(Ptr{Cint}, ctx.ptr[] + SoundDeviceBackendMemoryOffsetBytes)) != Int32(SoundDeviceBackendNone)
 is_connected(ctx::SoundDeviceContext) = isopen(ctx) && is_connected_unsafe(ctx)
 # Allocation
 function open_unsafe!(ctx::SoundDeviceContext)
@@ -72,15 +72,15 @@ function open!(ctx::SoundDeviceContext)
     return
 end
 # Handshake
-connect_unsafe!(ctx::SoundDeviceContext) = ccall((:soundio_connect, libsoundio), Cint, (Ptr{Cvoid},), ctx.ptr[]) != 0 && error("Connect failed")
+connect_unsafe!(ctx::SoundDeviceContext, backend::SoundDeviceBackend) = ccall((:soundio_connect_backend, libsoundio), Cint, (Ptr{Cvoid}, Int32), ctx.ptr[], Int32(backend)) != 0 && error("Connect to $backend failed")
 #=
 function connect_unsafe!(ctx::SoundIOContext)
     check_err(ccall((:soundio_connect, libsoundio), Cint, (Ptr{Cvoid},), ctx.ptr[]))
 end
 =#
-function connect!(ctx::SoundDeviceContext)
+function connect!(ctx::SoundDeviceContext, backend::SoundDeviceBackend)
     !isopen(ctx) && open!(ctx)
-    !is_connected(ctx) && connect_unsafe!(ctx)
+    !is_connected(ctx) && connect_unsafe!(ctx, backend)
     return
 end
 # Severing
@@ -111,10 +111,10 @@ flush_events!(ctx::SoundDeviceContext) = isopen(ctx) && flush_events_unsafe!(ctx
 @inline Base.wait(ctx::SoundDeviceContext)= isopen(ctx) && wait_unsafe(ctx)
 @inline Base.wait(device::SoundDevice) = SoundDevice_isopen_context(device.ptrs[].ctx) && wait_unsafe(device)
 # @inline Base.wait(device::SoundIODevice) = (device.ptrs[].device != C_NULL && SoundIO_isopen_context(device.ptrs[].ctx)) && wait_unsafe(device)
-function SoundDeviceContext(f::Function)
+function SoundDeviceContext(f::Function, backend::SoundDeviceBackend)
     ctx = SoundDeviceContext()
     try
-        connect!(ctx) # Auto-connect for convenience in do-blocks
+        connect!(ctx,backend) # Auto-connect for convenience in do-blocks
         f(ctx)
     finally 
         close(ctx) 
