@@ -1,7 +1,18 @@
 # Pre-resolving the memory address of the function to bypass lookup in the shared library's symbol table.
 const libsoundio = libsoundio_jll.libsoundio_path
 const SoundDeviceBackendMemoryOffsetBytes = 32
-const SoundDeviceBackendNone = 0
+@enum SoundDeviceBackend begin
+    SoundDeviceBackendNone = 0
+    Jack = 1
+    PulseAudio = 2
+    Alsa = 3
+    CoreAudio = 4
+    Wasapi = 5
+    SoundDeviceBackendDummy = 6
+end
+
+const SoundDeviceBackendDefault = Sys.islinux() ? Alsa : Sys.isapple() ? CoreAudio : Sys.iswindows() ? Wasapi : SoundDeviceBackendNone
+
 # Little Endian (3 bytes), Big Endian
 const SoundDeviceFormats = Dict{Symbol, Cint}(
     :Invalid        => 0 ,
