@@ -59,7 +59,7 @@ end
 @inline SoundDevice_isopen_context(ctx_ptr) = ctx_ptr != C_NULL
 @inline Base.isopen(ctx::SoundDeviceContext) = SoundDevice_isopen_context(ctx.ptr[])
 # Connectivity
-is_connected_unsafe(ctx::SoundDeviceContext) = unsafe_load(convert(Ptr{Cint}, ctx.ptr[] + SoundDeviceBackendMemoryOffsetBytes)) != Int32(SoundDeviceBackendNone)
+is_connected_unsafe(ctx::SoundDeviceContext) = SoundDeviceBackend(unsafe_load(convert(Ptr{Cint}, ctx.ptr[] + SoundDeviceBackendMemoryOffsetBytes))) != SoundDeviceBackendNone
 is_connected(ctx::SoundDeviceContext) = isopen(ctx) && is_connected_unsafe(ctx)
 # Allocation
 function open_unsafe!(ctx::SoundDeviceContext)
@@ -72,7 +72,7 @@ function open!(ctx::SoundDeviceContext)
     return
 end
 # Handshake
-connect_unsafe!(ctx::SoundDeviceContext, backend::SoundDeviceBackend) = ccall((:soundio_connect_backend, libsoundio), Cint, (Ptr{Cvoid}, Int32), ctx.ptr[], Int32(backend)) != 0 && error("Connect to $backend failed")
+connect_unsafe!(ctx::SoundDeviceContext, backend::SoundDeviceBackend) = ccall((:soundio_connect_backend, libsoundio), Cint, (Ptr{Cvoid}, Cint), ctx.ptr[], backend) != 0 && error("Connect to $backend failed")
 #=
 function connect_unsafe!(ctx::SoundIOContext)
     check_err(ccall((:soundio_connect, libsoundio), Cint, (Ptr{Cvoid},), ctx.ptr[]))
