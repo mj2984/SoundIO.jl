@@ -1,7 +1,7 @@
 # Pre-resolving the memory address of the function to bypass lookup in the shared library's symbol table.
 const libsoundio = libsoundio_jll.libsoundio_path
 const SoundDeviceBackendMemoryOffsetBytes = 32
-@enum SoundDeviceBackend begin
+@enum SoundDeviceBackend::Cint begin
     SoundDeviceBackendNone = 0
     Jack = 1
     PulseAudio = 2
