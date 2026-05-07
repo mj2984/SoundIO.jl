@@ -1,9 +1,9 @@
 const GLOBAL_CONTEXT = Ref{Union{Nothing, SoundDeviceContext}}(nothing)
 
-function get_context()
+function get_context(backend::SoundDeviceBackend = SoundDeviceBackendDefault)
     if GLOBAL_CONTEXT[] === nothing || !isopen(GLOBAL_CONTEXT[])
         GLOBAL_CONTEXT[] = SoundDeviceContext()
-        connect!(GLOBAL_CONTEXT[])
+        connect!(GLOBAL_CONTEXT[], backend)
     end
     return GLOBAL_CONTEXT[]
 end
@@ -11,13 +11,13 @@ end
 # Now you can simplify the API:
 enumerate_devices!(::Sound_Devices) = enumerate_devices!(get_context())
 list_devices(::Sound_Devices, access::SoundAccessType=rawsoundaccess) = list_devices(GLOBAL_CONTEXT[], access)
-function with_context(f::Function)
+function with_context(f::Function, backend::SoundDeviceBackend = SoundDeviceBackendDefault)
     if GLOBAL_CONTEXT[] !== nothing && isopen(GLOBAL_CONTEXT[])
         return f(GLOBAL_CONTEXT[]) # Borrow
     else
         ctx = SoundDeviceContext() # Own
         try
-            connect!(ctx)
+            connect!(ctx,backend)
             GLOBAL_CONTEXT[] = ctx
             return f(ctx)
         finally
